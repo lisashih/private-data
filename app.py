@@ -734,7 +734,7 @@ with t_conv:
 
     if not conv_raw.empty and conv_raw['jin'].sum() > 0:
         st.markdown("#### 轉換資料（全量）")
-        st.dataframe(conv_raw[['date_str','platform','campaign','jin','wan']].head(30),
+        st.dataframe(conv_raw[['week_str','platform','campaign','jin','wan']].head(30),
                      use_container_width=True, hide_index=True)
     else:
         st.info("「進件數完開數」分頁目前沒有有效資料。填入後重新上傳，系統將自動 join 到各廣告活動。")
