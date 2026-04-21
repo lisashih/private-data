@@ -3,140 +3,154 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
 
-# --- 1. 頁面外觀還原 (CSS) ---
-st.set_page_config(layout="wide", page_title="廣告投放整合儀表板")
+# --- 1. 頁面配置與高級 UI 雕刻 ---
+st.set_page_config(layout="wide", page_title="Pocket 廣告監控系統", page_icon="📈")
 
+# 注入 CSS 以還原截圖中的 Google Sans 字體與高級卡片感
 st.markdown("""
     <style>
-    .main { background-color: #f4f6f9; }
-    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap');
+    html, body, [class*="css"] { font-family: 'Noto Sans TC', sans-serif; background-color: #f0f2f5; }
+    
+    /* 分頁標籤樣式 */
+    .stTabs [data-baseweb="tab-list"] { gap: 10px; background-color: transparent; }
     .stTabs [data-baseweb="tab"] {
-        background-color: #f0f2f6; border-radius: 4px 4px 0 0; padding: 10px 20px;
+        height: 50px; background-color: #ffffff; border-radius: 8px 8px 0px 0px;
+        padding: 0px 30px; font-weight: 500; border: 1px solid #e5e7eb;
     }
     .stTabs [aria-selected="true"] { background-color: #2563eb !important; color: white !important; }
     
-    /* 模仿截圖中的數據卡片 */
-    .metric-box {
-        background: white; padding: 1.5rem; border-radius: 12px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1); border-top: 5px solid #2563eb;
+    /* 卡片設計 */
+    .metric-card {
+        background: white; padding: 24px; border-radius: 12px;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        border-left: 6px solid #2563eb; margin-bottom: 20px;
     }
+    .asa-card { border-left-color: #8b5cf6; }
+    .gkw-card { border-left-color: #2563eb; }
+    .pmax-card { border-left-color: #10b981; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 側邊欄控制與預算變更 ---
+# --- 2. 側邊欄：控制中心 ---
 with st.sidebar:
-    st.header("📊 系統控制")
-    uploaded_file = st.file_uploader("上傳原始資料 Excel", type=["xlsx"])
+    st.title("🎛️ 系統控制")
+    uploaded_file = st.file_uploader("請上傳 Pocket 廣告 Raw Data", type=["xlsx"])
     
     st.divider()
-    st.subheader("💰 預算管理")
-    b_asa = st.number_input("ASA 月預算", value=150000)
-    b_gkw = st.number_input("Google KW 月預算", value=500000)
-    b_pmax = st.number_input("Google Pmax 月預算", value=200000)
+    st.subheader("📌 預算變更")
+    # 預設值參考截圖設定
+    b_asa = st.number_input("ASA 月預算", value=150000, step=10000)
+    b_gkw = st.number_input("Google KW 月預算", value=500000, step=10000)
+    b_pmax = st.number_input("Google Pmax 月預算", value=200000, step=10000)
     
     st.divider()
-    st.subheader("📅 WOW 比較區間")
-    c_s = st.date_input("本週起", datetime(2026, 4, 13))
-    c_e = st.date_input("本週迄", datetime(2026, 4, 19))
-    p_s = st.date_input("上週起", datetime(2026, 4, 6))
-    p_e = st.date_input("上週迄", datetime(2026, 4, 12))
+    st.subheader("📅 WOW 比對日期")
+    c_s = st.date_input("本週開始", datetime(2026, 4, 13))
+    c_e = st.date_input("本週結束", datetime(2026, 4, 19))
+    p_s = st.date_input("上週開始", datetime(2026, 4, 6))
+    p_e = st.date_input("上週結束", datetime(2026, 4, 12))
 
-# --- 3. 數據自動適應處理 ---
-def load_and_standardize(file):
-    try:
-        xls = pd.ExcelFile(file)
-        sheets = xls.sheet_names
-        all_data = []
-        
-        # 欄位映射邏輯
-        mapping = {
-            'ASA': {'sheet': 'ASA', 'cost': '花費（台幣）', 'color': '#8b5cf6'},
-            'Google KW': {'sheet': 'Google KW', 'cost': '花費', 'color': '#2563eb'},
-            'Google Pmax': {'sheet': 'Google Pmax', 'cost': '花費', 'color': '#10b981'}
-        }
-        
-        for ch, conf in mapping.items():
-            s_name = next((s for s in sheets if conf['sheet'].upper() in s.upper()), None)
-            if s_name:
-                df = pd.read_excel(file, sheet_name=s_name)
-                df.columns = df.columns.str.strip()
-                df['Date'] = pd.to_datetime(df['Date'])
-                df['Channel'] = ch
-                df['Cost'] = df[conf['cost']] if conf['cost'] in df.columns else 0
-                df['Conv'] = df['進件數'] if '進件數' in df.columns else 0
-                df['Clicks'] = df['點擊'] if '點擊' in df.columns else 0
-                if '廣告關鍵字' not in df.columns: df['廣告關鍵字'] = 'Pmax'
-                all_data.append(df)
-        
-        return pd.concat(all_data, ignore_index=True) if all_data else None
-    except Exception as e:
-        st.error(f"讀取錯誤: {e}")
-        return None
-
-# --- 4. 儀表板主功能區域 ---
-if uploaded_file:
-    data = load_and_standardize(uploaded_file)
+# --- 3. 數據核心運算與模擬測試邏輯 ---
+def process_pocket_data(file):
+    xls = pd.ExcelFile(file)
+    combined = []
     
-    if data is not None:
-        # 分頁導覽功能 (對應你的四張截圖頁面)
-        tab_main, tab_asa, tab_kw, tab_pmax = st.tabs(["🏠 總覽 (Overview)", "🟣 ASA 分析", "🔵 Google KW", "🟢 Pmax 分析"])
-        
-        # --- 頁面 1: 總覽 (對應 第一張圖) ---
-        with tab_main:
-            st.title("廣告投放總覽")
+    # 標準化映射
+    map_cfg = {
+        'ASA': {'sheet': 'ASA', 'cost': '花費（台幣）', 'color': '#8b5cf6'},
+        'Google KW': {'sheet': 'Google KW', 'cost': '花費', 'color': '#2563eb'},
+        'Google Pmax': {'sheet': 'Google Pmax', 'cost': '花費', 'color': '#10b981'}
+    }
+    
+    for ch, cfg in map_cfg.items():
+        s_name = next((s for s in xls.sheet_names if cfg['sheet'].upper() in s.upper()), None)
+        if s_name:
+            df = pd.read_excel(file, sheet_name=s_name)
+            df.columns = df.columns.str.strip()
+            df['Date'] = pd.to_datetime(df['Date'])
+            df['Channel'] = ch
+            df['Cost'] = df[cfg['cost']] if cfg['cost'] in df.columns else 0
+            df['Conv'] = df['進件數'] if '進件數' in df.columns else 0
+            df['Clicks'] = df['點擊'] if '點擊' in df.columns else 0
+            df['Impr'] = df['曝光'] if '曝光' in df.columns else 0
+            if '廣告關鍵字' not in df.columns: df['廣告關鍵字'] = '-'
+            combined.append(df)
             
-            # 預算進度條
-            c1, c2, c3 = st.columns(3)
-            for i, (name, b_val, color) in enumerate([("ASA", b_asa, "#8b5cf6"), ("Google KW", b_gkw, "#2563eb"), ("Google Pmax", b_pmax, "#10b981")]):
-                spent = data[data['Channel'] == name]['Cost'].sum()
-                pct = min(spent/b_val, 1.0) if b_val > 0 else 0
-                with [c1, c2, c3][i]:
-                    st.markdown(f"**{name} 預算進度**")
-                    st.progress(pct)
-                    st.caption(f"${spent:,.0f} / ${b_val:,.0f} ({pct:.1%})")
+    return pd.concat(combined, ignore_index=True) if combined else None
+
+# --- 4. 渲染各個分頁 (與圖片一模一樣) ---
+if uploaded_file:
+    df = process_pocket_data(uploaded_file)
+    
+    if df is not None:
+        # 分頁導覽 (完全對應四張圖片)
+        tab_total, tab_asa, tab_gkw, tab_pmax = st.tabs(["🏠 總覽數據", "🟣 ASA 詳細分析", "🔵 Google KW 分析", "🟢 Pmax 成效監控"])
+        
+        # --- 頁面 1: 總覽 (還原第一張截圖) ---
+        with tab_total:
+            st.title("Pocket 廣告投放總覽")
+            col1, col2, col3 = st.columns(3)
+            budgets = [("ASA", b_asa, "#8b5cf6", col1), ("Google KW", b_gkw, "#2563eb", col2), ("Google Pmax", b_pmax, "#10b981", col3)]
+            
+            for ch, target, color, col in budgets:
+                spent = df[df['Channel'] == ch]['Cost'].sum()
+                prog = min(spent/target, 1.0) if target > 0 else 0
+                with col:
+                    st.markdown(f"**{ch} 預算執行度**")
+                    st.progress(prog)
+                    st.write(f"已花費: ${spent:,.0f} / 目標: ${target:,.0f} ({prog:.1%})")
             
             st.divider()
-            st.subheader("📈 WOW 週成長趨勢")
-            # 每日花費趨勢圖
-            fig = go.Figure()
-            for name, color in [("ASA", "#8b5cf6"), ("Google KW", "#2563eb"), ("Google Pmax", "#10b981")]:
-                d = data[data['Channel'] == name].groupby('Date')['Cost'].sum().reset_index()
-                fig.add_trace(go.Scatter(x=d['Date'], y=d['Cost'], name=name, line=dict(color=color, width=3)))
-            st.plotly_chart(fig, use_container_width=True)
+            st.subheader("📊 每日花費趨勢")
+            fig_total = go.Figure()
+            for ch, _, color, _ in budgets:
+                d_trend = df[df['Channel'] == ch].groupby('Date')['Cost'].sum().reset_index()
+                fig_total.add_trace(go.Scatter(x=d_trend['Date'], y=d_trend['Cost'], name=ch, line=dict(color=color, width=3)))
+            st.plotly_chart(fig_total, use_container_width=True)
 
-        # --- 頁面 2/3/4: 各渠道詳細數據 (對應 ASA/KW/Pmax 截圖) ---
-        def render_channel_page(ch_name, color):
-            st.subheader(f"{ch_name} 詳細指標 (WOW 對比)")
+        # --- 頁面 2, 3, 4: 渠道詳細 (還原 ASA/KW/Pmax 截圖) ---
+        def render_detail_page(channel_name, theme_color):
+            st.subheader(f"🔍 {channel_name} 指標深度分析")
             
-            c_mask = (data['Date'] >= pd.Timestamp(c_s)) & (data['Date'] <= pd.Timestamp(c_e)) & (data['Channel'] == ch_name)
-            p_mask = (data['Date'] >= pd.Timestamp(p_s)) & (data['Date'] <= pd.Timestamp(p_e)) & (data['Channel'] == ch_name)
+            c_mask = (df['Date'] >= pd.Timestamp(c_s)) & (df['Date'] <= pd.Timestamp(c_e)) & (df['Channel'] == channel_name)
+            p_mask = (df['Date'] >= pd.Timestamp(p_s)) & (df['Date'] <= pd.Timestamp(p_e)) & (df['Channel'] == channel_name)
             
-            curr, prev = data[c_mask], data[p_mask]
+            curr_data, prev_data = df[c_mask], df[p_mask]
             
-            c1, c2, c3, c4 = st.columns(4)
-            # 計算數據
-            c_sum = {'cost': curr['Cost'].sum(), 'conv': curr['Conv'].sum(), 'clk': curr['Clicks'].sum()}
-            p_sum = {'cost': prev['Cost'].sum(), 'conv': prev['Conv'].sum(), 'clk': prev['Clicks'].sum()}
+            # 核心指標計算
+            def calc(d):
+                return {'cost': d['Cost'].sum(), 'conv': d['Conv'].sum(), 'clk': d['Clicks'].sum()}
             
-            def delta_pct(c, p):
-                return f"{(c-p)/p:+.1%}" if p > 0 else "N/A"
+            c_met, p_met = calc(curr_data), calc(prev_data)
+            c_cpa = c_met['cost']/c_met['conv'] if c_met['conv'] > 0 else 0
+            p_cpa = p_met['cost']/p_met['conv'] if p_met['conv'] > 0 else 0
+            
+            # 還原圖片中的四個 Metric 卡片
+            m1, m2, m3, m4 = st.columns(4)
+            def delta(c, p): return f"{(c-p)/p:+.1%}" if p > 0 else "N/A"
+            
+            m1.metric("進件數", f"{c_met['conv']:,.0f}", delta(c_met['conv'], p_met['conv']))
+            m2.metric("CPA (成本)", f"${c_cpa:.0f}", delta(c_cpa, p_cpa), delta_color="inverse")
+            m3.metric("本週總花費", f"${c_met['cost']:,.0f}", delta(c_met['cost'], p_met['cost']), delta_color="inverse")
+            m4.metric("點擊轉化率", f"{c_met['conv']/c_met['clk']:.2%}" if c_met['clk']>0 else "0.00%")
+            
+            st.divider()
+            st.write("📋 關鍵字/廣告活動成效清單 (本週)")
+            # 還原截圖下方的表格數據
+            table_df = curr_data.groupby(['廣告活動', '廣告關鍵字']).agg({
+                'Cost': 'sum', 'Conv': 'sum', 'Clicks': 'sum', 'Impr': 'sum'
+            }).reset_index().sort_values('Cost', ascending=False)
+            st.dataframe(table_df, use_container_width=True)
 
-            c1.metric("進件數", f"{c_sum['conv']:,.0f}", delta_pct(c_sum['conv'], p_sum['conv']))
-            cpa = c_sum['cost']/c_sum['conv'] if c_sum['conv'] > 0 else 0
-            p_cpa = p_sum['cost']/p_sum['conv'] if p_sum['conv'] > 0 else 0
-            c2.metric("CPA (進件成本)", f"${cpa:.0f}", delta_pct(cpa, p_cpa), delta_color="inverse")
-            c3.metric("本週花費", f"${c_sum['cost']:,.0f}", delta_pct(c_sum['cost'], p_sum['cost']), delta_color="inverse")
-            cvr = c_sum['conv']/c_sum['clk'] if c_sum['clk'] > 0 else 0
-            c4.metric("點擊轉化率", f"{cvr:.2%}")
-
-            # 關鍵字清單 (截圖下方的表格)
-            st.markdown("---")
-            st.write("📋 本週關鍵字表現詳情")
-            st.dataframe(curr[['Date', '廣告活動', '廣告關鍵字', 'Cost', '進件數', 'Clicks']].sort_values('Cost', ascending=False), use_container_width=True)
-
-        with tab_asa: render_channel_page("ASA", "#8b5cf6")
-        with tab_kw: render_channel_page("Google KW", "#2563eb")
-        with tab_pmax: render_channel_page("Google Pmax", "#10b981")
+        with tab_asa: render_detail_page("ASA", "#8b5cf6")
+        with tab_gkw: render_detail_page("Google KW", "#2563eb")
+        with tab_pmax: render_detail_page("Google Pmax", "#10b981")
 
 else:
-    st.info("請於左側上傳 Excel 檔案以呈現四張頁面的數據分析。")
+    st.info("👋 您好！請上傳廣告 Raw Data 以呈現完全還原截圖的 Pocket 廣告儀表板。")
+    # 測試模擬說明
+    with st.expander("🛠️ 測試模擬說明"):
+        st.write("1. 程式會自動過濾 META 分頁，只抓取 ASA/KW/Pmax。")
+        st.write("2. 已自動適應 '花費（台幣）' 與 '花費' 兩種欄位名稱。")
+        st.write("3. 分頁功能採用 st.tabs 實現，保證與圖片頁面切換邏輯一致。")
