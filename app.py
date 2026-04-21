@@ -1,16 +1,18 @@
 """
-口袋證券廣告成效儀表板 v2
-Streamlit App — 支援 META / ASA / Google KW / Google PMax 四平台
-進件數/完開數 從「進件數完開數」分頁 join，廣告活動層級才有轉換指標
+口袋證券廣告成效儀表板
+平台：ASA / Google KW / Google PMax
+時間維度：手動選擇日期區間
 """
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+from datetime import date, timedelta
 
 from data_processor import (
-    load_data, period_slice, sdiv, fmt_money, fmt_num, wow_pct
+    load_data, filter_by_dates, reagg_camp_from_raw,
+    sdiv, fmt_money, fmt_num, wow_pct, shorten_camp
 )
 
 # ══════════════════════════════════════════════════════
@@ -23,100 +25,111 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── CSS ───────────────────────────────────────────────
 st.markdown("""
 <style>
-[data-testid="block-container"] { padding-top: 1.5rem; }
-.kpi-card {
+[data-testid="block-container"] { padding-top: 1.2rem; }
+.kpi {
     background: #F8FAFC;
     border: 1px solid #E2E8F0;
-    border-radius: 12px;
-    padding: 16px 20px 12px;
+    border-radius: 10px;
+    padding: 14px 18px 10px;
     height: 100%;
 }
 .kpi-label { font-size: 11px; color: #64748B; text-transform: uppercase; letter-spacing: .05em; font-weight: 500; }
-.kpi-value { font-size: 24px; font-weight: 700; color: #0F172A; margin: 4px 0 2px; }
-.kpi-wow   { font-size: 12px; font-weight: 500; }
-.kpi-wow.up   { color: #16A34A; }
-.kpi-wow.dn   { color: #DC2626; }
-.kpi-wow.neu  { color: #94A3B8; }
-.pill {
-    display: inline-block;
-    padding: 2px 10px;
-    border-radius: 99px;
-    font-size: 11px;
-    font-weight: 600;
-    margin-right: 4px;
+.kpi-value { font-size: 22px; font-weight: 700; color: #0F172A; margin: 4px 0 2px; line-height: 1.2; }
+.kpi-sub   { font-size: 11px; color: #94A3B8; }
+.kpi-wow   { font-size: 12px; font-weight: 600; }
+.kpi-wow.up { color: #16A34A; }
+.kpi-wow.dn { color: #DC2626; }
+.kpi-wow.na { color: #94A3B8; }
+.note-box {
+    background: #FFF7ED;
+    border-left: 3px solid #F97316;
+    border-radius: 4px;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: #7C2D12;
+    margin-bottom: 12px;
 }
-.pill-asa  { background: #EFF6FF; color: #1D4ED8; }
-.pill-meta { background: #F3E8FF; color: #7C3AED; }
-.pill-kw   { background: #FFFBEB; color: #B45309; }
-.pill-pm   { background: #F0FDF4; color: #15803D; }
 </style>
 """, unsafe_allow_html=True)
 
-COLORS = {
-    'asa':  '#2563EB',
-    'meta': '#7C3AED',
-    'kw':   '#D97706',
-    'pmax': '#16A34A',
-    'up':   '#16A34A',
-    'dn':   '#DC2626',
-}
+C = {'asa': '#2563EB', 'kw': '#D97706', 'pmax': '#16A34A', 'up': '#16A34A', 'dn': '#DC2626'}
 
 
 # ══════════════════════════════════════════════════════
-# UI 工具
+# 工具函式
 # ══════════════════════════════════════════════════════
-def kpi_card(label: str, value: str, prev_value=None, good_down=False, note: str = ""):
-    delta = wow_pct(
-        float(str(value).replace('NT$', '').replace('萬', '0000').replace(',', '').replace('–', '0')),
-        float(str(prev_value).replace('NT$', '').replace('萬', '0000').replace(',', '').replace('–', '0')) if prev_value else 0
-    ) if prev_value is not None else None
-
-    if delta is None or (isinstance(delta, float) and np.isnan(delta)):
-        wow_html = '<span class="kpi-wow neu">—</span>'
+def kpi_card(label, val, wow=None, good_down=False, sub=""):
+    if wow is not None:
+        arrow = '▲' if wow > 0 else '▼'
+        good  = (wow < 0) if good_down else (wow > 0)
+        wcls  = 'up' if good else 'dn'
+        wow_html = f'<div class="kpi-wow {wcls}">{arrow} {abs(wow):.1f}% vs 對比期</div>'
     else:
-        arrow = '▲' if delta > 0 else '▼'
-        good = delta < 0 if good_down else delta > 0
-        cls = 'up' if good else 'dn'
-        wow_html = f'<span class="kpi-wow {cls}">{arrow} {abs(delta):.1f}% WoW</span>'
-
-    note_html = f'<br><span style="font-size:10px;color:#94A3B8">{note}</span>' if note else ''
-    return f"""
-    <div class="kpi-card">
-      <div class="kpi-label">{label}</div>
-      <div class="kpi-value">{value}</div>
-      {wow_html}{note_html}
-    </div>"""
+        wow_html = '<div class="kpi-wow na">—</div>'
+    sub_html = f'<div class="kpi-sub">{sub}</div>' if sub else ''
+    return f"""<div class="kpi">
+  <div class="kpi-label">{label}</div>
+  <div class="kpi-value">{val}</div>
+  {wow_html}{sub_html}
+</div>"""
 
 
-def kpi_row(items: list, show_wow=False):
-    """items = [(label, cur_val, prev_val_or_None, good_down, note), ...]"""
+def kpi_row(items):
     cols = st.columns(len(items))
     for col, item in zip(cols, items):
-        label = item[0]
-        val   = item[1]
-        prev  = item[2] if len(item) > 2 else None
-        gd    = item[3] if len(item) > 3 else False
-        note  = item[4] if len(item) > 4 else ""
-        col.markdown(kpi_card(label, val, prev if show_wow else None, gd, note), unsafe_allow_html=True)
+        label   = item[0]
+        val     = item[1]
+        wow     = item[2] if len(item) > 2 else None
+        gd      = item[3] if len(item) > 3 else False
+        sub     = item[4] if len(item) > 4 else ""
+        col.markdown(kpi_card(label, val, wow, gd, sub), unsafe_allow_html=True)
 
 
-def sum_col(df: pd.DataFrame, col: str, default=0):
-    if df.empty or col not in df.columns:
-        return default
-    return df[col].sum()
+def sc(df, col, default=0):
+    if df.empty or col not in df.columns: return default
+    return float(df[col].sum())
 
 
-def wow_badge(cur, prev, good_down=False):
-    d = wow_pct(cur, prev)
-    if d is None:
-        return ""
-    arrow = '▲' if d > 0 else '▼'
-    good = d < 0 if good_down else d > 0
-    color = COLORS['up'] if good else COLORS['dn']
-    return f'<span style="color:{color};font-size:12px;font-weight:600">{arrow} {abs(d):.1f}%</span>'
+def daily_bar(daily_cur, daily_cmp, col, color, height=260):
+    fig = go.Figure()
+    if daily_cmp is not None and not daily_cmp.empty:
+        fig.add_trace(go.Bar(
+            name='對比期', x=daily_cmp['date_str'], y=daily_cmp[col],
+            marker_color='#CBD5E1', opacity=0.6
+        ))
+    if not daily_cur.empty:
+        fig.add_trace(go.Bar(
+            name='選取期', x=daily_cur['date_str'], y=daily_cur[col],
+            marker_color=color
+        ))
+    fig.update_layout(
+        height=height, margin=dict(t=10, b=30, l=0, r=0),
+        barmode='overlay', legend=dict(orientation='h', y=1.08),
+        xaxis_title='', yaxis_title=col,
+    )
+    return fig
+
+
+def daily_line(daily_cur, daily_cmp, col, color, height=240):
+    fig = go.Figure()
+    if daily_cmp is not None and not daily_cmp.empty and col in daily_cmp.columns:
+        fig.add_trace(go.Scatter(
+            name='對比期', x=daily_cmp['date_str'], y=daily_cmp[col],
+            mode='lines', line=dict(color='#CBD5E1', width=1.5, dash='dot')
+        ))
+    if not daily_cur.empty and col in daily_cur.columns:
+        fig.add_trace(go.Scatter(
+            name='選取期', x=daily_cur['date_str'], y=daily_cur[col],
+            mode='lines+markers', line=dict(color=color, width=2), marker=dict(size=4)
+        ))
+    fig.update_layout(
+        height=height, margin=dict(t=10, b=30, l=0, r=0),
+        legend=dict(orientation='h', y=1.08),
+        xaxis_title='', yaxis_title=col,
+    )
+    return fig
 
 
 # ══════════════════════════════════════════════════════
@@ -129,44 +142,79 @@ with st.sidebar:
     uploaded = st.file_uploader(
         "📂 上傳廣告資料 (.xlsx)",
         type=["xlsx"],
-        help="上傳包含 META / ASA / Google KW / Google Pmax / 進件數完開數 的 xlsx"
+        help="包含 ASA / Google KW / Google Pmax / 進件數完開數 四個分頁"
     )
 
-    st.markdown("---")
-    period_opt = st.radio(
-        "📅 時間維度",
-        ["本週 WoW", "月累計"],
-        index=0,
-        help="本週 = 最新 7 天；月累計 = 資料區間全部"
-    )
-    period = 'week' if period_opt == "本週 WoW" else 'month'
-    show_wow = (period == 'week')
+    if uploaded:
+        with st.spinner("載入資料..."):
+            try:
+                data = load_data(uploaded)
+                meta = data.get('meta', {})
+            except Exception as e:
+                st.error(f"❌ 讀取失敗：{e}")
+                st.stop()
 
-    st.markdown("---")
-    st.markdown("**💰 預算進度（本月）**")
-    st.caption("填入已花費金額（NT$）：")
-    BUDGET = {
-        'SEM 品牌字':  350000,
-        'SEM 廣字':   235000,
-        'SEM 投資入門': 15000,
-        'PMAX':       300000,
-        'ASA 台股字':  300000,
-        'ASA 美股字':   50000,
-    }
-    budget_actual = {}
-    for k, bud in BUDGET.items():
-        budget_actual[k] = st.number_input(
-            f"{k}（預算 {bud//1000}K）",
-            min_value=0, max_value=bud * 2, value=0, step=5000, key=f'b_{k}'
-        )
+        if not meta:
+            st.error("❌ 找不到有效日期資料")
+            st.stop()
 
-    st.markdown("---")
-    st.caption("""
-**資料架構說明**
-- `進件數`/`完開數` 在「進件數完開數」分頁手動填入
-- 廣告活動層級 join 轉換資料後才有 CPL/進件率/完開率
-- 關鍵字層級只顯示流量指標
-""")
+        min_d = date.fromisoformat(meta['min_date'])
+        max_d = date.fromisoformat(meta['max_date'])
+
+        st.markdown("---")
+        st.markdown("**📅 選取期間**")
+        col_s, col_e = st.columns(2)
+        with col_s:
+            sel_start = st.date_input("開始", value=min_d, min_value=min_d, max_value=max_d, key='sel_s')
+        with col_e:
+            sel_end = st.date_input("結束", value=max_d, min_value=min_d, max_value=max_d, key='sel_e')
+
+        if sel_start > sel_end:
+            st.error("開始日期不能晚於結束日期")
+            st.stop()
+
+        # 快速選擇按鈕
+        st.caption("快速選取：")
+        qcols = st.columns(3)
+        if qcols[0].button("本月", use_container_width=True):
+            st.session_state['sel_s'] = max_d.replace(day=1)
+            st.session_state['sel_e'] = max_d
+            st.rerun()
+        if qcols[1].button("近7天", use_container_width=True):
+            st.session_state['sel_s'] = max(min_d, max_d - timedelta(days=6))
+            st.session_state['sel_e'] = max_d
+            st.rerun()
+        if qcols[2].button("近14天", use_container_width=True):
+            st.session_state['sel_s'] = max(min_d, max_d - timedelta(days=13))
+            st.session_state['sel_e'] = max_d
+            st.rerun()
+
+        st.markdown("---")
+        st.markdown("**📊 對比期間**")
+        use_cmp = st.checkbox("啟用對比", value=False)
+        cmp_start = cmp_end = None
+        if use_cmp:
+            cmp_col1, cmp_col2 = st.columns(2)
+            with cmp_col1:
+                cmp_start = st.date_input("對比開始", value=min_d, min_value=min_d, max_value=max_d, key='cmp_s')
+            with cmp_col2:
+                cmp_end = st.date_input("對比結束", value=min_d + timedelta(days=(sel_end - sel_start).days), min_value=min_d, max_value=max_d, key='cmp_e')
+
+        st.markdown("---")
+        st.markdown("**💰 預算進度（本月，NT$）**")
+        BUDGET = {'品牌字': 350000, '廣字': 235000, '投資入門': 15000,
+                  'PMAX': 300000, 'ASA 台股字': 300000, 'ASA 美股字': 50000}
+        budget_actual = {}
+        for k, bud in BUDGET.items():
+            budget_actual[k] = st.number_input(
+                f"{k}（{bud//1000}K）", min_value=0, max_value=bud*2, value=0, step=5000, key=f'b_{k}'
+            )
+
+        st.markdown("---")
+        st.caption(f"資料區間：{meta['min_date']} ~ {meta['max_date']}\n產生時間：{meta['generated']}")
+    else:
+        data = None
+        meta = {}
 
 
 # ══════════════════════════════════════════════════════
@@ -174,611 +222,597 @@ with st.sidebar:
 # ══════════════════════════════════════════════════════
 st.title("📊 口袋證券廣告成效儀表板")
 
-if uploaded is None:
+if not data:
     st.info("👈 請從左側上傳 `廣告raw.xlsx` 開始分析")
     with st.expander("📋 xlsx 格式說明", expanded=True):
         st.markdown("""
-| 分頁名稱 | 必要欄位 | 說明 |
-|---------|---------|-----|
-| **META** | 天數, 行銷活動名稱, 曝光次數, 連結點擊次數, 花費金額 (TWD) | Facebook/Meta 廣告 |
-| **ASA** | Date, 廣告活動, 廣告群組, 廣告關鍵字, 曝光, 點擊, 下載數, 花費（台幣） | Apple Search Ads |
-| **Google KW** | Date, 廣告活動, 廣告群組, 廣告關鍵字, 曝光, 點擊, 花費 | Google 關鍵字廣告 |
-| **Google Pmax** | Date, 廣告活動, 曝光, 點擊, 花費 | Google PMax |
-| **進件數完開數** | Date, 平台, 廣告活動, 進件數, 完開數 | ⭐ 轉換資料（手填）|
+| 分頁 | 必要欄位 |
+|------|---------|
+| **ASA** | Date, 廣告活動, 廣告群組, 廣告關鍵字, 曝光, 點擊, 下載數, 花費（台幣） |
+| **Google KW** | Date, 廣告活動, 廣告群組, 廣告關鍵字, 曝光, 點擊, 花費 |
+| **Google Pmax** | Date, 廣告活動, 曝光, 點擊, 花費 |
+| **進件數完開數** | Date, 平台, 廣告活動, 進件數, 完開數 ⭐ 手填轉換資料 |
 
-> **⚠️ 進件數/完開數** 需在「進件數完開數」分頁填入，系統會自動 join 到對應的廣告活動層級。
+> **⚠️ 進件數/完開數** 在關鍵字層級無法匹配，只在廣告活動層級有效。
 """)
     st.stop()
 
-
-# 載入資料
-with st.spinner("讀取資料中..."):
-    try:
-        data = load_data(uploaded)
-    except Exception as e:
-        st.error(f"❌ 讀取失敗：{e}")
-        st.stop()
-
-meta = data.get('meta', {})
-if not meta:
-    st.error("❌ 找不到有效的日期資料，請確認 xlsx 格式")
-    st.stop()
+# ── 日期字串 ─────────────────────────────────────────
+S = sel_start.isoformat()
+E = sel_end.isoformat()
+CS = cmp_start.isoformat() if cmp_start else None
+CE = cmp_end.isoformat()   if cmp_end   else None
 
 st.caption(
-    f"📅 資料區間：**{meta['min_date']}** – **{meta['max_date']}**　｜　"
-    f"本週：{meta['w2_start']} ~ {meta['w2_end']}　上週：{meta['w1_start']} ~ {meta['w1_end']}"
+    f"**選取期間：{S} → {E}**"
+    + (f"　｜　對比期間：{CS} → {CE}" if use_cmp and CS else "")
+    + f"　｜　資料區間：{meta['min_date']} ~ {meta['max_date']}"
 )
 
-# 取出各資料表
-asa_daily  = data.get('asa_daily',  pd.DataFrame())
-asa_camp   = data.get('asa_camp',   pd.DataFrame())
-asa_kw     = data.get('asa_kw',     pd.DataFrame())
-kw_daily   = data.get('kw_daily',   pd.DataFrame())
-kw_camp    = data.get('kw_camp',    pd.DataFrame())
-kw_kw      = data.get('kw_kw',      pd.DataFrame())
-pm_daily   = data.get('pm_daily',   pd.DataFrame())
-pm_camp    = data.get('pm_camp',    pd.DataFrame())
-meta_daily = data.get('meta_daily', pd.DataFrame())
-meta_camp  = data.get('meta_camp',  pd.DataFrame())
-conv_raw   = data.get('conv_raw',   pd.DataFrame())
+# ── 取出全量資料 ──────────────────────────────────────
+asa_daily_all = data.get('asa_daily', pd.DataFrame())
+asa_camp_all  = data.get('asa_camp',  pd.DataFrame())
+asa_kw_all    = data.get('asa_kw',    pd.DataFrame())
+asa_raw_all   = data.get('asa_raw',   pd.DataFrame())
+kw_daily_all  = data.get('kw_daily',  pd.DataFrame())
+kw_camp_all   = data.get('kw_camp',   pd.DataFrame())
+kw_kw_all     = data.get('kw_kw',     pd.DataFrame())
+kw_raw_all    = data.get('kw_raw',    pd.DataFrame())
+pm_daily_all  = data.get('pm_daily',  pd.DataFrame())
+pm_camp_all   = data.get('pm_camp',   pd.DataFrame())
+pm_raw_all    = data.get('pm_raw',    pd.DataFrame())
+conv_raw      = data.get('conv_raw',  pd.DataFrame())
 
-# 週期切割
-def pw(df, col='date_str'): return period_slice(df, col, meta, 'week')
-def pp(df, col='date_str'): return period_slice(df, col, meta, 'prev')
-def pm_(df, col='date_str'): return df  # month = all
+# ── 篩選選取期 ────────────────────────────────────────
+asa_d  = filter_by_dates(asa_daily_all, 'date_str', S, E)
+kw_d   = filter_by_dates(kw_daily_all,  'date_str', S, E)
+pm_d   = filter_by_dates(pm_daily_all,  'date_str', S, E)
+
+# 廣告活動層級從 raw 重新彙總（確保日期篩選準確）
+asa_raw_f = filter_by_dates(asa_raw_all, 'date_str', S, E)
+kw_raw_f  = filter_by_dates(kw_raw_all,  'date_str', S, E)
+pm_raw_f  = filter_by_dates(pm_raw_all,  'date_str', S, E)
+
+def reagg_asa(raw_f):
+    if raw_f.empty: return pd.DataFrame()
+    c = raw_f.groupby('廣告活動').agg(spend=('spend','sum'), imp=('imp','sum'), clk=('clk','sum'), dl=('dl','sum')).reset_index()
+    c['CTR%'] = c.apply(lambda r: sdiv(r['clk'], r['imp'], 100), axis=1)
+    c['CPI']  = c.apply(lambda r: sdiv(r['spend'], r['dl'], 1, 0), axis=1)
+    return c
+
+def reagg_kw_camp(raw_f):
+    if raw_f.empty: return pd.DataFrame()
+    c = raw_f.groupby(['廣告活動','camp_short']).agg(spend=('spend','sum'), imp=('imp','sum'), clk=('clk','sum')).reset_index()
+    c['CTR%'] = c.apply(lambda r: sdiv(r['clk'], r['imp'], 100), axis=1)
+    c['CPC']  = c.apply(lambda r: sdiv(r['spend'], r['clk'], 1, 1), axis=1)
+    return c
+
+def reagg_pm_camp(raw_f):
+    if raw_f.empty: return pd.DataFrame()
+    c = raw_f.groupby('廣告活動').agg(spend=('spend','sum'), imp=('imp','sum'), clk=('clk','sum')).reset_index()
+    c['CTR%'] = c.apply(lambda r: sdiv(r['clk'], r['imp'], 100), axis=1)
+    c['CPC']  = c.apply(lambda r: sdiv(r['spend'], r['clk'], 1, 1), axis=1)
+    return c
+
+asa_c = reagg_asa(asa_raw_f)
+kw_c  = reagg_kw_camp(kw_raw_f)
+pm_c  = reagg_pm_camp(pm_raw_f)
+
+# 關鍵字層級
+def reagg_asa_kw(raw_f):
+    if raw_f.empty: return pd.DataFrame()
+    k = raw_f.groupby(['廣告活動','廣告群組','廣告關鍵字']).agg(spend=('spend','sum'), imp=('imp','sum'), clk=('clk','sum'), dl=('dl','sum')).reset_index()
+    k['CTR%'] = k.apply(lambda r: sdiv(r['clk'], r['imp'], 100), axis=1)
+    k['CPI']  = k.apply(lambda r: sdiv(r['spend'], r['dl'], 1, 0), axis=1)
+    return k.sort_values('spend', ascending=False)
+
+def reagg_kw_kw(raw_f):
+    if raw_f.empty: return pd.DataFrame()
+    k = raw_f.groupby(['camp_short','廣告關鍵字']).agg(spend=('spend','sum'), imp=('imp','sum'), clk=('clk','sum')).reset_index()
+    k['CTR%'] = k.apply(lambda r: sdiv(r['clk'], r['imp'], 100), axis=1)
+    k['CPC']  = k.apply(lambda r: sdiv(r['spend'], r['clk'], 1, 1), axis=1)
+    return k.sort_values('spend', ascending=False)
+
+asa_kw_f = reagg_asa_kw(asa_raw_f)
+kw_kw_f  = reagg_kw_kw(kw_raw_f)
+
+# ── 篩選對比期 ────────────────────────────────────────
+asa_d_c = filter_by_dates(asa_daily_all, 'date_str', CS, CE) if use_cmp and CS else None
+kw_d_c  = filter_by_dates(kw_daily_all,  'date_str', CS, CE) if use_cmp and CS else None
+pm_d_c  = filter_by_dates(pm_daily_all,  'date_str', CS, CE) if use_cmp and CS else None
+
+def cmp_spend(daily_c):
+    if daily_c is None or daily_c.empty: return 0
+    return float(daily_c['spend'].sum()) if 'spend' in daily_c.columns else 0
+def cmp_clk(daily_c):
+    if daily_c is None or daily_c.empty: return 0
+    return float(daily_c['clk'].sum()) if 'clk' in daily_c.columns else 0
+
+# ── 轉換 join（用原始全量，因為轉換是廣告活動層級、不分日）─────────────
+def join_conv(camp_df, camp_key, platform):
+    if camp_df.empty: return camp_df
+    from data_processor import _get_conv
+    conv = _get_conv(conv_raw, platform)
+    camp_df = camp_df.copy()
+    if not conv.empty:
+        cg = conv.groupby('campaign').agg(jin=('jin','sum'), wan=('wan','sum')).reset_index()
+        camp_df = camp_df.merge(cg, left_on=camp_key, right_on='campaign', how='left')
+    else:
+        camp_df['jin'] = 0; camp_df['wan'] = 0
+    camp_df = camp_df.fillna(0)
+    return camp_df
+
+asa_c = join_conv(asa_c, '廣告活動', 'ASA')
+if not asa_c.empty:
+    asa_c['CPL']    = asa_c.apply(lambda r: sdiv(r['spend'], r['jin'], 1, 0), axis=1)
+    asa_c['進件率%'] = asa_c.apply(lambda r: sdiv(r['jin'], r['dl'], 100), axis=1)
+    asa_c['完開率%'] = asa_c.apply(lambda r: sdiv(r['wan'], r['jin'], 100), axis=1)
+
+kw_c = join_conv(kw_c, '廣告活動', 'Google')
+if not kw_c.empty:
+    kw_c['CPL']    = kw_c.apply(lambda r: sdiv(r['spend'], r['jin'], 1, 0), axis=1)
+    kw_c['進件率%'] = kw_c.apply(lambda r: sdiv(r['jin'], r['clk'], 100), axis=1)
+    kw_c['完開率%'] = kw_c.apply(lambda r: sdiv(r['wan'], r['jin'], 100), axis=1)
+
+pm_c = join_conv(pm_c, '廣告活動', 'Google')
+if not pm_c.empty:
+    pm_c['CPL']   = pm_c.apply(lambda r: sdiv(r['spend'], r['jin'], 1, 0), axis=1)
+    pm_c['完開率%'] = pm_c.apply(lambda r: sdiv(r['wan'], r['jin'], 100), axis=1)
 
 
 # ══════════════════════════════════════════════════════
-# Tab 架構
+# Tabs
 # ══════════════════════════════════════════════════════
-tabs = st.tabs([
-    "🏠 總覽",
-    "🍎 ASA",
-    "🔍 Google KW",
-    "⚡ Google PMax",
-    "📘 META",
-    "💰 預算進度",
-    "🔄 轉換分析",
+t_ov, t_asa, t_kw, t_pm, t_budget, t_conv = st.tabs([
+    "🏠 總覽", "🍎 ASA", "🔍 Google KW", "⚡ Google PMax", "💰 預算進度", "🔄 轉換分析"
 ])
-t_ov, t_asa, t_kw, t_pm, t_meta, t_budget, t_conv = tabs
 
 
 # ════════════════════════════════════════════════════
 # 總覽
 # ════════════════════════════════════════════════════
 with t_ov:
-    st.subheader("全平台加總")
+    st.subheader(f"全平台加總　{S} – {E}")
 
-    def get_spend(daily, col='spend'):
-        if daily.empty: return 0, 0
-        cur  = pw(daily)['spend'].sum()  if 'spend' in pw(daily).columns  else 0
-        prev = pp(daily)['spend'].sum()  if 'spend' in pp(daily).columns  else 0
-        return cur, prev
+    asa_sp = sc(asa_d, 'spend');  asa_sp_c = cmp_spend(asa_d_c)
+    kw_sp  = sc(kw_d,  'spend');  kw_sp_c  = cmp_spend(kw_d_c)
+    pm_sp  = sc(pm_d,  'spend');  pm_sp_c  = cmp_spend(pm_d_c)
+    total  = asa_sp + kw_sp + pm_sp
+    total_c = asa_sp_c + kw_sp_c + pm_sp_c
 
-    asa_sc,  asa_sp  = get_spend(asa_daily)
-    kw_sc,   kw_sp   = get_spend(kw_daily)
-    pm_sc,   pm_sp   = get_spend(pm_daily)
-    meta_sc, meta_sp = get_spend(meta_daily)
+    asa_clk = sc(asa_d, 'clk');  asa_clk_c = cmp_clk(asa_d_c)
+    kw_clk  = sc(kw_d,  'clk');  kw_clk_c  = cmp_clk(kw_d_c)
+    pm_clk  = sc(pm_d,  'clk');  pm_clk_c  = cmp_clk(pm_d_c)
+    total_clk = asa_clk + kw_clk + pm_clk
+    total_clk_c = asa_clk_c + kw_clk_c + pm_clk_c
 
-    total_sc = asa_sc + kw_sc + pm_sc + meta_sc
-    total_sp = asa_sp + kw_sp + pm_sp + meta_sp
+    asa_dl = sc(asa_d, 'dl')
 
-    # 點擊
-    def get_clk(daily):
-        if daily.empty: return 0, 0
-        return (pw(daily)['clk'].sum() if 'clk' in pw(daily).columns else 0,
-                pp(daily)['clk'].sum() if 'clk' in pp(daily).columns else 0)
-    asa_cc, asa_cp = get_clk(asa_daily)
-    kw_cc,  kw_cp  = get_clk(kw_daily)
-    pm_cc,  pm_cp  = get_clk(pm_daily)
-    mt_cc,  mt_cp  = get_clk(meta_daily)
-    total_cc = asa_cc + kw_cc + pm_cc + mt_cc
-    total_cp = asa_cp + kw_cp + pm_cp + mt_cp
-
-    # ASA 下載數
-    asa_dl_c = asa_daily['dl'].sum() if not asa_daily.empty and 'dl' in asa_daily.columns else 0
-
-    # 進件數/完開數（廣告活動層級合計）
-    total_jin = (
-        sum_col(asa_camp,  'jin') +
-        sum_col(kw_camp,   'jin') +
-        sum_col(pm_camp,   'jin') +
-        sum_col(meta_camp, 'jin')
-    )
-    total_wan = (
-        sum_col(asa_camp,  'wan') +
-        sum_col(kw_camp,   'wan') +
-        sum_col(pm_camp,   'wan') +
-        sum_col(meta_camp, 'wan')
-    )
+    total_jin = sc(asa_c, 'jin') + sc(kw_c, 'jin') + sc(pm_c, 'jin')
+    total_wan = sc(asa_c, 'wan') + sc(kw_c, 'wan') + sc(pm_c, 'wan')
 
     kpi_row([
-        ("總花費",  fmt_money(total_sc), fmt_money(total_sp), True),
-        ("總點擊",  fmt_num(total_cc),   fmt_num(total_cp)),
-        ("ASA 下載數", fmt_num(asa_dl_c), None),
-        ("進件數",  fmt_num(total_jin),  None, False, "廣告活動層級"),
-        ("完開數",  fmt_num(total_wan),  None, False, "廣告活動層級"),
-    ], show_wow=show_wow)
+        ("總花費",   fmt_money(total),     wow_pct(total, total_c) if use_cmp else None, True),
+        ("總點擊",   fmt_num(total_clk),   wow_pct(total_clk, total_clk_c) if use_cmp else None),
+        ("ASA 下載", fmt_num(asa_dl),      None),
+        ("進件數",   fmt_num(total_jin),   None, False, "廣告活動層級"),
+        ("完開數",   fmt_num(total_wan),   None, False, "廣告活動層級"),
+    ])
 
     st.markdown("---")
 
-    # 每日花費趨勢
-    st.subheader("每日花費趨勢")
-    all_dates = sorted(set(
-        asa_daily['date_str'].tolist() + kw_daily['date_str'].tolist() +
-        pm_daily['date_str'].tolist()  + meta_daily['date_str'].tolist()
-        if not all(df.empty for df in [asa_daily, kw_daily, pm_daily, meta_daily]) else []
-    ))[-30:]
-
-    if all_dates:
+    # 每日花費趨勢（堆疊 bar）
+    st.markdown(f"#### 每日花費趨勢　{S} – {E}")
+    all_d_cur = sorted(set(
+        (asa_d['date_str'].tolist() if not asa_d.empty else []) +
+        (kw_d['date_str'].tolist()  if not kw_d.empty  else []) +
+        (pm_d['date_str'].tolist()  if not pm_d.empty  else [])
+    ))
+    if all_d_cur:
         def get_d(df, col='spend'):
             m = dict(zip(df['date_str'], df[col])) if not df.empty and col in df.columns else {}
-            return [m.get(d, 0) for d in all_dates]
+            return [m.get(d, 0) for d in all_d_cur]
 
         fig = go.Figure()
-        fig.add_trace(go.Bar(name='ASA',       x=all_dates, y=get_d(asa_daily),  marker_color=COLORS['asa']))
-        fig.add_trace(go.Bar(name='Google KW', x=all_dates, y=get_d(kw_daily),   marker_color=COLORS['kw']))
-        fig.add_trace(go.Bar(name='PMax',      x=all_dates, y=get_d(pm_daily),   marker_color=COLORS['pmax']))
-        fig.add_trace(go.Bar(name='META',      x=all_dates, y=get_d(meta_daily), marker_color=COLORS['meta']))
-        fig.update_layout(barmode='stack', height=320, margin=dict(t=20, b=30),
-                          legend=dict(orientation='h', y=1.08),
-                          yaxis=dict(title='NT$'))
+        fig.add_trace(go.Bar(name='ASA',       x=all_d_cur, y=get_d(asa_d), marker_color=C['asa']))
+        fig.add_trace(go.Bar(name='Google KW', x=all_d_cur, y=get_d(kw_d),  marker_color=C['kw']))
+        fig.add_trace(go.Bar(name='PMax',      x=all_d_cur, y=get_d(pm_d),  marker_color=C['pmax']))
+        fig.update_layout(barmode='stack', height=300, margin=dict(t=10, b=30, l=0, r=0),
+                          legend=dict(orientation='h', y=1.08), yaxis_title='NT$')
         st.plotly_chart(fig, use_container_width=True)
 
     col1, col2 = st.columns(2)
-
     with col1:
-        st.subheader("花費佔比（月累計）")
+        st.markdown("#### 花費佔比")
         pie_df = pd.DataFrame({
-            '平台':   ['ASA', 'Google KW', 'PMax', 'META'],
-            '花費':   [asa_daily['spend'].sum() if not asa_daily.empty else 0,
-                       kw_daily['spend'].sum()  if not kw_daily.empty  else 0,
-                       pm_daily['spend'].sum()  if not pm_daily.empty  else 0,
-                       meta_daily['spend'].sum() if not meta_daily.empty else 0],
+            '平台': ['ASA', 'Google KW', 'PMax'],
+            '花費': [asa_sp, kw_sp, pm_sp],
         })
         fig_p = px.pie(pie_df, values='花費', names='平台',
                        color='平台',
-                       color_discrete_map={'ASA': COLORS['asa'], 'Google KW': COLORS['kw'],
-                                           'PMax': COLORS['pmax'], 'META': COLORS['meta']},
+                       color_discrete_map={'ASA': C['asa'], 'Google KW': C['kw'], 'PMax': C['pmax']},
                        hole=0.42)
-        fig_p.update_layout(height=280, margin=dict(t=10, b=10),
-                             legend=dict(orientation='h'))
+        fig_p.update_layout(height=260, margin=dict(t=10, b=10))
         st.plotly_chart(fig_p, use_container_width=True)
 
     with col2:
-        if show_wow:
-            st.subheader("WoW 花費變化 %")
-            wow_rows = []
-            for lbl, sc, sp in [
-                ('ASA',   asa_sc,  asa_sp),
-                ('KW',    kw_sc,   kw_sp),
-                ('PMax',  pm_sc,   pm_sp),
-                ('META',  meta_sc, meta_sp),
-            ]:
-                d = wow_pct(sc, sp)
-                if d is not None:
-                    wow_rows.append({'平台': lbl, 'WoW%': round(d, 1)})
-            if wow_rows:
-                wdf = pd.DataFrame(wow_rows)
-                clr = [COLORS['up'] if v >= 0 else COLORS['dn'] for v in wdf['WoW%']]
-                fig_w = go.Figure(go.Bar(x=wdf['WoW%'], y=wdf['平台'], orientation='h', marker_color=clr))
-                fig_w.update_layout(height=260, margin=dict(t=10, b=10), xaxis_title='WoW %')
-                st.plotly_chart(fig_w, use_container_width=True)
+        if use_cmp and total_c > 0:
+            st.markdown("#### 各平台花費對比")
+            cmp_df = pd.DataFrame({
+                '平台': ['ASA','Google KW','PMax'],
+                '選取期': [asa_sp,  kw_sp,  pm_sp],
+                '對比期': [asa_sp_c, kw_sp_c, pm_sp_c],
+            })
+            fig_cmp = go.Figure()
+            fig_cmp.add_trace(go.Bar(name='選取期', x=cmp_df['平台'], y=cmp_df['選取期'],
+                                     marker_color=[C['asa'], C['kw'], C['pmax']]))
+            fig_cmp.add_trace(go.Bar(name='對比期', x=cmp_df['平台'], y=cmp_df['對比期'],
+                                     marker_color='#CBD5E1'))
+            fig_cmp.update_layout(height=260, margin=dict(t=10, b=10), barmode='group',
+                                  yaxis_title='NT$')
+            st.plotly_chart(fig_cmp, use_container_width=True)
         else:
-            st.subheader("各平台點擊比較")
+            st.markdown("#### 各平台點擊比較")
             bar_df = pd.DataFrame({
-                '平台':  ['ASA', 'Google KW', 'PMax', 'META'],
-                '點擊':  [asa_daily['clk'].sum() if not asa_daily.empty else 0,
-                           kw_daily['clk'].sum()  if not kw_daily.empty  else 0,
-                           pm_daily['clk'].sum()  if not pm_daily.empty  else 0,
-                           meta_daily['clk'].sum() if not meta_daily.empty else 0],
+                '平台':  ['ASA', 'Google KW', 'PMax'],
+                '點擊':  [asa_clk, kw_clk, pm_clk],
             })
             fig_b = px.bar(bar_df, x='平台', y='點擊',
                            color='平台',
-                           color_discrete_map={'ASA': COLORS['asa'], 'Google KW': COLORS['kw'],
-                                               'PMax': COLORS['pmax'], 'META': COLORS['meta']})
+                           color_discrete_map={'ASA': C['asa'], 'Google KW': C['kw'], 'PMax': C['pmax']})
             fig_b.update_layout(height=260, margin=dict(t=10, b=10), showlegend=False)
             st.plotly_chart(fig_b, use_container_width=True)
 
 
 # ════════════════════════════════════════════════════
-# ASA Tab
+# ASA
 # ════════════════════════════════════════════════════
 with t_asa:
-    st.subheader("🍎 Apple Search Ads")
-    if asa_camp.empty:
-        st.warning("尚無 ASA 資料"); st.stop()
+    st.subheader(f"🍎 Apple Search Ads　{S} – {E}")
 
-    tot = asa_camp[['spend','imp','clk','dl','jin','wan']].sum()
-    kpi_row([
-        ("花費台幣",   fmt_money(tot['spend']), None),
-        ("曝光",      fmt_num(tot['imp']),     None),
-        ("點擊",      fmt_num(tot['clk']),     None),
-        ("下載數",    fmt_num(tot['dl']),      None),
-        ("CTR%",     f"{sdiv(tot['clk'], tot['imp'], 100):.2f}%", None),
-        ("CPI",      fmt_money(sdiv(tot['spend'], tot['dl'], 1, 0)), None, True),
-    ])
-
-    has_conv = tot['jin'] > 0
-    if has_conv:
-        st.markdown("**轉換指標（廣告活動層級）**")
-        kpi_row([
-            ("進件數",  fmt_num(tot['jin']), None),
-            ("完開數",  fmt_num(tot['wan']), None),
-            ("CPL",   fmt_money(sdiv(tot['spend'], tot['jin'], 1, 0)), None, True),
-            ("進件率%", f"{sdiv(tot['jin'], tot['dl'], 100):.1f}%", None),
-            ("完開率%", f"{sdiv(tot['wan'], tot['jin'], 100):.1f}%", None),
-        ])
+    if asa_c.empty and asa_d.empty:
+        st.warning("此期間無 ASA 資料")
     else:
-        st.info("💡 尚未填入進件數/完開數（請在「進件數完開數」分頁填入後重新上傳）")
+        tot_sp = sc(asa_d, 'spend');  tot_sp_c = cmp_spend(asa_d_c)
+        tot_dl = sc(asa_d, 'dl');     tot_imp  = sc(asa_d, 'imp')
+        tot_clk = sc(asa_d, 'clk')
+        ctr = sdiv(tot_clk, tot_imp, 100)
+        cpi = sdiv(tot_sp, tot_dl, 1, 0)
 
-    st.markdown("---")
-    col1, col2 = st.columns([1.2, 1])
-
-    with col1:
-        st.markdown("#### 廣告活動明細")
-        disp = asa_camp[['廣告活動','spend','dl','CTR%','CPI','jin','wan','進件率%','完開率%']].copy()
-        disp.columns = ['廣告活動','花費台幣','下載數','CTR%','CPI','進件數','完開數','進件率%','完開率%']
-        disp['花費台幣'] = disp['花費台幣'].apply(lambda x: f"NT${x:,.0f}")
-        disp['CPI']     = disp['CPI'].apply(lambda x: f"NT${x:,.0f}")
-        st.dataframe(disp, use_container_width=True, hide_index=True)
-
-    with col2:
-        st.markdown("#### CPI 比較（NT$/下載）")
-        cc = asa_camp[asa_camp['CPI'] > 0].sort_values('CPI', ascending=True)
-        if not cc.empty:
-            clrs = ['#DC2626' if v > 1000 else '#F59E0B' if v > 500 else '#16A34A' for v in cc['CPI']]
-            fig = go.Figure(go.Bar(
-                x=cc['CPI'], y=cc['廣告活動'], orientation='h',
-                marker_color=clrs,
-                text=[f"NT${v:,.0f}" for v in cc['CPI']], textposition='outside'
-            ))
-            fig.add_vline(x=500, line_dash='dash', line_color='#F59E0B', annotation_text='500')
-            fig.add_vline(x=1000, line_dash='dash', line_color='#DC2626', annotation_text='1000')
-            fig.update_layout(height=max(250, len(cc)*45+60), margin=dict(t=10, b=10, r=80),
-                              showlegend=False, xaxis_title='CPI (NT$)')
-            st.plotly_chart(fig, use_container_width=True)
-
-    st.markdown("---")
-    st.markdown("#### 關鍵字效益（流量指標，不含轉換）")
-    st.caption("⚠️ 關鍵字層級無法匹配進件數/完開數，請以廣告活動層級查看轉換指標")
-    if not asa_kw.empty:
-        kw_disp = asa_kw[['廣告活動','廣告關鍵字','spend','imp','clk','dl','CTR%','CPI']].head(50).copy()
-        kw_disp.columns = ['廣告活動','關鍵字','花費台幣','曝光','點擊','下載數','CTR%','CPI']
-        kw_disp['花費台幣'] = kw_disp['花費台幣'].apply(lambda x: f"NT${x:,.0f}")
-        kw_disp['CPI']     = kw_disp['CPI'].apply(lambda x: f"NT${x:,.0f}" if x > 0 else '–')
-        st.dataframe(kw_disp, use_container_width=True, hide_index=True)
-
-    # 每日下載趨勢
-    if not asa_daily.empty:
-        st.markdown("---")
-        st.markdown("#### 每日下載數趨勢")
-        fig_dl = px.bar(asa_daily, x='date_str', y='dl',
-                        color_discrete_sequence=[COLORS['asa']])
-        fig_dl.update_layout(height=240, margin=dict(t=10, b=30),
-                              xaxis_title='', yaxis_title='下載數')
-        st.plotly_chart(fig_dl, use_container_width=True)
-
-
-# ════════════════════════════════════════════════════
-# Google KW Tab
-# ════════════════════════════════════════════════════
-with t_kw:
-    st.subheader("🔍 Google Keyword")
-    if kw_camp.empty:
-        st.warning("尚無 Google KW 資料")
-    else:
-        tot = kw_camp[['spend','imp','clk','jin','wan']].sum()
         kpi_row([
-            ("花費",   fmt_money(tot['spend']), None),
-            ("曝光",   fmt_num(tot['imp']),    None),
-            ("點擊",   fmt_num(tot['clk']),    None),
-            ("CTR%",  f"{sdiv(tot['clk'], tot['imp'], 100):.2f}%", None),
-            ("CPC",   fmt_money(sdiv(tot['spend'], tot['clk'], 1, 1)), None, True),
+            ("花費台幣", fmt_money(tot_sp),  wow_pct(tot_sp, tot_sp_c) if use_cmp else None, True),
+            ("曝光",    fmt_num(tot_imp),   None),
+            ("點擊",    fmt_num(tot_clk),   None),
+            ("下載數",  fmt_num(tot_dl),    None),
+            ("CTR%",   f"{ctr:.2f}%",      None),
+            ("CPI",    fmt_money(cpi),     None, True),
         ])
 
-        has_conv = tot['jin'] > 0
-        if has_conv:
+        if sc(asa_c, 'jin') > 0:
+            jin = sc(asa_c, 'jin'); wan = sc(asa_c, 'wan')
+            st.markdown("**轉換指標（廣告活動層級）**")
             kpi_row([
-                ("進件數", fmt_num(tot['jin']), None),
-                ("完開數", fmt_num(tot['wan']), None),
-                ("CPL",  fmt_money(sdiv(tot['spend'], tot['jin'], 1, 0)), None, True),
-                ("進件率%", f"{sdiv(tot['jin'], tot['clk'], 100):.2f}%", None),
-                ("完開率%", f"{sdiv(tot['wan'], tot['jin'], 100):.1f}%", None),
+                ("進件數",  fmt_num(jin),  None),
+                ("完開數",  fmt_num(wan),  None),
+                ("CPL",   fmt_money(sdiv(tot_sp, jin, 1, 0)), None, True),
+                ("進件率%", f"{sdiv(jin, tot_dl, 100):.1f}%", None),
+                ("完開率%", f"{sdiv(wan, jin, 100):.1f}%",    None),
             ])
         else:
-            st.info("💡 尚未填入進件數/完開數")
+            st.markdown('<div class="note-box">💡 進件數/完開數尚未填入「進件數完開數」分頁，或此期間無轉換資料</div>', unsafe_allow_html=True)
+
+        st.markdown("---")
+        col1, col2 = st.columns([1.2, 1])
+
+        with col1:
+            st.markdown("#### 廣告活動明細")
+            if not asa_c.empty:
+                cols_show = ['廣告活動','spend','dl','CTR%','CPI']
+                if 'jin' in asa_c.columns: cols_show += ['jin','wan','CPL','進件率%','完開率%']
+                disp = asa_c[cols_show].copy()
+                rename = {'spend':'花費台幣','dl':'下載數','jin':'進件數','wan':'完開數'}
+                disp.rename(columns=rename, inplace=True)
+                disp['花費台幣'] = disp['花費台幣'].apply(lambda x: f"NT${x:,.0f}")
+                disp['CPI']     = disp['CPI'].apply(lambda x: f"NT${x:,.0f}" if x > 0 else '–')
+                if 'CPL' in disp.columns:
+                    disp['CPL'] = disp['CPL'].apply(lambda x: f"NT${x:,.0f}" if x > 0 else '–')
+                st.dataframe(disp, use_container_width=True, hide_index=True)
+
+        with col2:
+            st.markdown("#### CPI 比較（NT$/下載）")
+            if not asa_c.empty and 'CPI' in asa_c.columns:
+                cc = asa_c[asa_c['CPI'] > 0].sort_values('CPI', ascending=True)
+                if not cc.empty:
+                    clrs = ['#DC2626' if v > 1000 else '#F59E0B' if v > 500 else '#16A34A' for v in cc['CPI']]
+                    fig = go.Figure(go.Bar(
+                        x=cc['CPI'], y=cc['廣告活動'], orientation='h', marker_color=clrs,
+                        text=[f"NT${v:,.0f}" for v in cc['CPI']], textposition='outside'
+                    ))
+                    fig.add_vline(x=500,  line_dash='dash', line_color='#F59E0B', annotation_text='500')
+                    fig.add_vline(x=1000, line_dash='dash', line_color='#DC2626', annotation_text='1000')
+                    fig.update_layout(height=max(240, len(cc)*45+60),
+                                      margin=dict(t=10, b=10, r=80), showlegend=False, xaxis_title='CPI (NT$)')
+                    st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("---")
+        st.markdown("#### 每日下載數趨勢")
+        st.plotly_chart(daily_bar(asa_d, asa_d_c, 'dl', C['asa']), use_container_width=True)
+
+        st.markdown("---")
+        st.markdown("#### 關鍵字效益（流量指標）")
+        st.markdown('<div class="note-box">⚠️ 關鍵字層級無法匹配進件數/完開數，轉換指標請看上方廣告活動層級</div>', unsafe_allow_html=True)
+        if not asa_kw_f.empty:
+            k_disp = asa_kw_f[['廣告活動','廣告關鍵字','spend','imp','clk','dl','CTR%','CPI']].head(60).copy()
+            k_disp.columns = ['廣告活動','關鍵字','花費台幣','曝光','點擊','下載數','CTR%','CPI']
+            k_disp['花費台幣'] = k_disp['花費台幣'].apply(lambda x: f"NT${x:,.0f}")
+            k_disp['CPI']     = k_disp['CPI'].apply(lambda x: f"NT${x:,.0f}" if x > 0 else '–')
+            st.dataframe(k_disp, use_container_width=True, hide_index=True)
+
+
+# ════════════════════════════════════════════════════
+# Google KW
+# ════════════════════════════════════════════════════
+with t_kw:
+    st.subheader(f"🔍 Google Keyword　{S} – {E}")
+
+    if kw_c.empty and kw_d.empty:
+        st.warning("此期間無 Google KW 資料")
+    else:
+        tot_sp  = sc(kw_d, 'spend'); tot_sp_c = cmp_spend(kw_d_c)
+        tot_imp = sc(kw_d, 'imp');   tot_clk  = sc(kw_d, 'clk')
+        ctr = sdiv(tot_clk, tot_imp, 100)
+        cpc = sdiv(tot_sp, tot_clk, 1, 1)
+
+        kpi_row([
+            ("花費",  fmt_money(tot_sp),  wow_pct(tot_sp, tot_sp_c) if use_cmp else None, True),
+            ("曝光",  fmt_num(tot_imp),  None),
+            ("點擊",  fmt_num(tot_clk),  None),
+            ("CTR%", f"{ctr:.2f}%",     None),
+            ("CPC",  fmt_money(cpc),    None, True),
+        ])
+
+        if sc(kw_c, 'jin') > 0:
+            jin = sc(kw_c, 'jin'); wan = sc(kw_c, 'wan')
+            st.markdown("**轉換指標（廣告活動層級）**")
+            kpi_row([
+                ("進件數",  fmt_num(jin),  None),
+                ("完開數",  fmt_num(wan),  None),
+                ("CPL",   fmt_money(sdiv(tot_sp, jin, 1, 0)), None, True),
+                ("進件率%", f"{sdiv(jin, tot_clk, 100):.2f}%", None),
+                ("完開率%", f"{sdiv(wan, jin, 100):.1f}%",     None),
+            ])
+        else:
+            st.markdown('<div class="note-box">💡 進件數/完開數尚未填入「進件數完開數」分頁，或此期間無轉換資料</div>', unsafe_allow_html=True)
 
         st.markdown("---")
         col1, col2 = st.columns([1.3, 1])
 
         with col1:
-            st.markdown("#### 廣告活動明細（含轉換指標）")
-            cols_show = ['camp_short','spend','imp','clk','CTR%','CPC','jin','wan','CPL','進件率%','完開率%']
-            cols_show = [c for c in cols_show if c in kw_camp.columns]
-            disp = kw_camp[cols_show].copy()
-            col_map = {'camp_short':'活動','spend':'花費','imp':'曝光','clk':'點擊',
-                       'jin':'進件數','wan':'完開數','CPL':'CPL'}
-            disp.rename(columns=col_map, inplace=True)
-            if '花費' in disp.columns: disp['花費'] = disp['花費'].apply(lambda x: f"NT${x:,.0f}")
-            if 'CPL'  in disp.columns: disp['CPL']  = disp['CPL'].apply(lambda x: f"NT${x:,.0f}" if x > 0 else '–')
-            st.dataframe(disp, use_container_width=True, hide_index=True)
+            st.markdown("#### 廣告活動明細")
+            if not kw_c.empty:
+                c_show = ['廣告活動','camp_short','spend','imp','clk','CTR%','CPC']
+                if 'jin' in kw_c.columns: c_show += ['jin','wan','CPL','進件率%','完開率%']
+                disp = kw_c[[c for c in c_show if c in kw_c.columns]].copy()
+                disp.rename(columns={'camp_short':'活動簡稱','spend':'花費','imp':'曝光','clk':'點擊','jin':'進件數','wan':'完開數'}, inplace=True)
+                if '花費' in disp.columns: disp['花費'] = disp['花費'].apply(lambda x: f"NT${x:,.0f}")
+                if 'CPL'  in disp.columns: disp['CPL']  = disp['CPL'].apply(lambda x: f"NT${x:,.0f}" if x > 0 else '–')
+                st.dataframe(disp, use_container_width=True, hide_index=True)
 
         with col2:
             st.markdown("#### 廣告活動花費比較")
-            if not kw_camp.empty:
-                fc = kw_camp.sort_values('spend', ascending=True).tail(10)
+            if not kw_c.empty:
+                fc = kw_c.sort_values('spend', ascending=True).tail(10)
                 fig = go.Figure(go.Bar(
                     x=fc['spend'], y=fc['camp_short'], orientation='h',
-                    marker_color=COLORS['kw'],
+                    marker_color=C['kw'],
                     text=[f"NT${v:,.0f}" for v in fc['spend']], textposition='outside'
                 ))
-                fig.update_layout(height=max(240, len(fc)*42+60), margin=dict(t=10, b=10, r=80),
-                                  showlegend=False, xaxis_title='花費 (NT$)')
+                fig.update_layout(height=max(240, len(fc)*42+60),
+                                  margin=dict(t=10, b=10, r=80), showlegend=False, xaxis_title='花費 (NT$)')
                 st.plotly_chart(fig, use_container_width=True)
 
         st.markdown("---")
-        st.markdown("#### 關鍵字明細（純流量指標）")
-        st.caption("⚠️ 關鍵字層級無法匹配進件數/完開數，轉換指標請看上方廣告活動層級")
-        if not kw_kw.empty:
-            kw_disp = kw_kw[['camp_short','廣告關鍵字','spend','imp','clk','CTR%','CPC']].head(60).copy()
-            kw_disp.columns = ['活動','關鍵字','花費','曝光','點擊','CTR%','CPC']
-            kw_disp['花費'] = kw_disp['花費'].apply(lambda x: f"NT${x:,.0f}")
-            kw_disp['CPC']  = kw_disp['CPC'].apply(lambda x: f"NT${x:,.1f}" if x > 0 else '–')
-            st.dataframe(kw_disp, use_container_width=True, hide_index=True)
+        st.markdown("#### 每日點擊趨勢")
+        st.plotly_chart(daily_line(kw_d, kw_d_c, 'clk', C['kw']), use_container_width=True)
 
-        if not kw_daily.empty:
-            st.markdown("---")
-            st.markdown("#### 每日點擊趨勢")
-            fig_kd = px.line(kw_daily, x='date_str', y='clk',
-                             color_discrete_sequence=[COLORS['kw']], markers=True)
-            fig_kd.update_layout(height=240, margin=dict(t=10, b=30),
-                                  xaxis_title='', yaxis_title='點擊數')
-            st.plotly_chart(fig_kd, use_container_width=True)
+        st.markdown("---")
+        st.markdown("#### 關鍵字明細（純流量指標）")
+        st.markdown('<div class="note-box">⚠️ 關鍵字層級無法匹配進件數/完開數，轉換指標請看上方廣告活動層級</div>', unsafe_allow_html=True)
+        if not kw_kw_f.empty:
+            k_disp = kw_kw_f[['camp_short','廣告關鍵字','spend','imp','clk','CTR%','CPC']].head(60).copy()
+            k_disp.columns = ['活動','關鍵字','花費','曝光','點擊','CTR%','CPC']
+            k_disp['花費'] = k_disp['花費'].apply(lambda x: f"NT${x:,.0f}")
+            k_disp['CPC']  = k_disp['CPC'].apply(lambda x: f"NT${x:,.1f}" if x > 0 else '–')
+            st.dataframe(k_disp, use_container_width=True, hide_index=True)
 
 
 # ════════════════════════════════════════════════════
-# Google PMax Tab
+# Google PMax
 # ════════════════════════════════════════════════════
 with t_pm:
-    st.subheader("⚡ Google PMax")
-    if pm_camp.empty:
-        st.warning("尚無 PMax 資料")
+    st.subheader(f"⚡ Google PMax　{S} – {E}")
+
+    if pm_c.empty and pm_d.empty:
+        st.warning("此期間無 PMax 資料")
     else:
-        tot = pm_camp[['spend','imp','clk','jin','wan']].sum()
+        tot_sp  = sc(pm_d, 'spend'); tot_sp_c = cmp_spend(pm_d_c)
+        tot_imp = sc(pm_d, 'imp');   tot_clk  = sc(pm_d, 'clk')
+        ctr = sdiv(tot_clk, tot_imp, 100)
+        cpc = sdiv(tot_sp, tot_clk, 1, 1)
+
         kpi_row([
-            ("花費",   fmt_money(tot['spend']), None),
-            ("曝光",   fmt_num(tot['imp']),    None),
-            ("點擊",   fmt_num(tot['clk']),    None),
-            ("CTR%",  f"{sdiv(tot['clk'], tot['imp'], 100):.2f}%", None),
-            ("CPC",   fmt_money(sdiv(tot['spend'], tot['clk'], 1, 1)), None, True),
+            ("花費",  fmt_money(tot_sp),  wow_pct(tot_sp, tot_sp_c) if use_cmp else None, True),
+            ("曝光",  fmt_num(tot_imp),  None),
+            ("點擊",  fmt_num(tot_clk),  None),
+            ("CTR%", f"{ctr:.2f}%",     None),
+            ("CPC",  fmt_money(cpc),    None, True),
         ])
 
-        has_conv = tot['jin'] > 0
-        if has_conv:
+        if sc(pm_c, 'jin') > 0:
+            jin = sc(pm_c, 'jin'); wan = sc(pm_c, 'wan')
+            st.markdown("**轉換指標（廣告活動層級）**")
             kpi_row([
-                ("進件數",  fmt_num(tot['jin']), None),
-                ("完開數",  fmt_num(tot['wan']), None),
-                ("CPL",   fmt_money(sdiv(tot['spend'], tot['jin'], 1, 0)), None, True),
-                ("完開率%", f"{sdiv(tot['wan'], tot['jin'], 100):.1f}%", None),
+                ("進件數",  fmt_num(jin), None),
+                ("完開數",  fmt_num(wan), None),
+                ("CPL",   fmt_money(sdiv(tot_sp, jin, 1, 0)), None, True),
+                ("完開率%", f"{sdiv(wan, jin, 100):.1f}%", None),
             ])
         else:
-            st.info("💡 尚未填入進件數/完開數")
+            st.markdown('<div class="note-box">💡 進件數/完開數尚未填入「進件數完開數」分頁，或此期間無轉換資料</div>', unsafe_allow_html=True)
 
-        # 每日趨勢
-        if not pm_daily.empty:
-            st.markdown("---")
-            st.markdown("#### 每日點擊 & 花費趨勢")
+        st.markdown("---")
+        st.markdown("#### 每日點擊 & 花費")
+        if not pm_d.empty:
             fig = go.Figure()
-            fig.add_trace(go.Bar(name='點擊', x=pm_daily['date_str'], y=pm_daily['clk'],
+            if pm_d_c is not None and not pm_d_c.empty:
+                fig.add_trace(go.Bar(name='點擊（對比期）', x=pm_d_c['date_str'], y=pm_d_c['clk'],
+                                     marker_color='#D1FAE5', yaxis='y'))
+            fig.add_trace(go.Bar(name='點擊（選取期）', x=pm_d['date_str'], y=pm_d['clk'],
                                  marker_color='#86EFAC', yaxis='y'))
-            fig.add_trace(go.Scatter(name='花費', x=pm_daily['date_str'], y=pm_daily['spend'],
-                                     mode='lines+markers', line=dict(color=COLORS['pmax'], width=2),
-                                     yaxis='y2'))
+            fig.add_trace(go.Scatter(name='花費（選取期）', x=pm_d['date_str'], y=pm_d['spend'],
+                                     mode='lines+markers', line=dict(color=C['pmax'], width=2),
+                                     marker=dict(size=4), yaxis='y2'))
             fig.update_layout(
-                height=300, margin=dict(t=10, b=30),
+                height=300, margin=dict(t=10, b=30, l=0, r=0), barmode='overlay',
                 yaxis=dict(title='點擊'),
-                yaxis2=dict(title='花費 (NT$)', overlaying='y', side='right',
-                            showgrid=False),
+                yaxis2=dict(title='花費 (NT$)', overlaying='y', side='right', showgrid=False),
                 legend=dict(orientation='h', y=1.08),
             )
             st.plotly_chart(fig, use_container_width=True)
 
-        # 明細表
         st.markdown("---")
         st.markdown("#### 廣告活動明細")
-        disp = pm_camp[['廣告活動','spend','imp','clk','CTR%','CPC','jin','wan','CPL','完開率%']].copy()
-        disp.columns = ['廣告活動','花費','曝光','點擊','CTR%','CPC','進件數','完開數','CPL','完開率%']
-        disp['花費'] = disp['花費'].apply(lambda x: f"NT${x:,.0f}")
-        disp['CPC']  = disp['CPC'].apply(lambda x: f"NT${x:,.1f}")
-        disp['CPL']  = disp['CPL'].apply(lambda x: f"NT${x:,.0f}" if x > 0 else '–')
-        st.dataframe(disp, use_container_width=True, hide_index=True)
-
-
-# ════════════════════════════════════════════════════
-# META Tab
-# ════════════════════════════════════════════════════
-with t_meta:
-    st.subheader("📘 Facebook / Meta")
-    if meta_camp.empty:
-        st.warning("尚無 META 資料")
-    else:
-        tot = meta_camp[['spend','imp','clk','jin','wan']].sum()
-        kpi_row([
-            ("花費",   fmt_money(tot['spend']), None),
-            ("曝光",   fmt_num(tot['imp']),    None),
-            ("點擊",   fmt_num(tot['clk']),    None),
-            ("CTR%",  f"{sdiv(tot['clk'], tot['imp'], 100):.2f}%", None),
-            ("CPC",   fmt_money(sdiv(tot['spend'], tot['clk'], 1, 1)), None, True),
-        ])
-
-        has_conv = tot['jin'] > 0
-        if has_conv:
-            kpi_row([
-                ("進件數",  fmt_num(tot['jin']), None),
-                ("完開數",  fmt_num(tot['wan']), None),
-                ("CPL",   fmt_money(sdiv(tot['spend'], tot['jin'], 1, 0)), None, True),
-                ("進件率%", f"{sdiv(tot['jin'], tot['clk'], 100):.2f}%", None),
-                ("完開率%", f"{sdiv(tot['wan'], tot['jin'], 100):.1f}%", None),
-            ])
-        else:
-            st.info("💡 尚未填入進件數/完開數")
-
-        st.markdown("---")
-        st.markdown("#### 廣告活動明細（Top 20）")
-        disp = meta_camp[['camp','spend','imp','clk','CTR%','CPC','jin','wan','CPL','進件率%']].head(20).copy()
-        disp.columns = ['廣告活動','花費','曝光','點擊','CTR%','CPC','進件數','完開數','CPL','進件率%']
-        disp['花費'] = disp['花費'].apply(lambda x: f"NT${x:,.0f}")
-        disp['CPC']  = disp['CPC'].apply(lambda x: f"NT${x:,.1f}")
-        disp['CPL']  = disp['CPL'].apply(lambda x: f"NT${x:,.0f}" if x > 0 else '–')
-        st.dataframe(disp, use_container_width=True, hide_index=True)
-
-        if not meta_daily.empty:
-            st.markdown("---")
-            st.markdown("#### 每日花費趨勢")
-            fig = px.bar(meta_daily, x='date_str', y='spend',
-                         color_discrete_sequence=[COLORS['meta']])
-            fig.update_layout(height=240, margin=dict(t=10, b=30),
-                              xaxis_title='', yaxis_title='花費 (NT$)')
-            st.plotly_chart(fig, use_container_width=True)
+        if not pm_c.empty:
+            c_show = ['廣告活動','spend','imp','clk','CTR%','CPC']
+            if 'jin' in pm_c.columns: c_show += ['jin','wan','CPL','完開率%']
+            disp = pm_c[[c for c in c_show if c in pm_c.columns]].copy()
+            disp.rename(columns={'spend':'花費','imp':'曝光','clk':'點擊','jin':'進件數','wan':'完開數'}, inplace=True)
+            if '花費' in disp.columns: disp['花費'] = disp['花費'].apply(lambda x: f"NT${x:,.0f}")
+            if 'CPC'  in disp.columns: disp['CPC']  = disp['CPC'].apply(lambda x: f"NT${x:,.1f}")
+            if 'CPL'  in disp.columns: disp['CPL']  = disp['CPL'].apply(lambda x: f"NT${x:,.0f}" if x > 0 else '–')
+            st.dataframe(disp, use_container_width=True, hide_index=True)
 
 
 # ════════════════════════════════════════════════════
 # 預算進度
 # ════════════════════════════════════════════════════
 with t_budget:
-    st.subheader("💰 預算進度追蹤")
+    st.subheader("💰 預算進度追蹤（本月）")
 
-    google_actual = sum(budget_actual.get(k, 0) for k in ['SEM 品牌字','SEM 廣字','SEM 投資入門','PMAX'])
-    asa_actual    = sum(budget_actual.get(k, 0) for k in ['ASA 台股字','ASA 美股字'])
-    total_actual  = google_actual + asa_actual
-    total_budget  = sum(BUDGET.values())
+    google_act = sum(budget_actual.get(k, 0) for k in ['品牌字','廣字','投資入門','PMAX'])
+    asa_act    = sum(budget_actual.get(k, 0) for k in ['ASA 台股字','ASA 美股字'])
+    total_act  = google_act + asa_act
+    total_bud  = sum(BUDGET.values())
 
-    # 總覽卡
-    col1, col2, col3 = st.columns(3)
-    for col, (lbl, act, bud) in zip([col1, col2, col3], [
-        ('Google 合計', google_actual, 900000),
-        ('ASA 合計',    asa_actual,    350000),
-        ('全渠道合計',  total_actual,  total_budget),
+    c1, c2, c3 = st.columns(3)
+    for col, (lbl, act, bud) in zip([c1, c2, c3], [
+        ('Google 合計', google_act, 900000),
+        ('ASA 合計',    asa_act,    350000),
+        ('全渠道合計',  total_act,  total_bud),
     ]):
         pct = act / bud * 100 if bud else 0
         color = '#DC2626' if pct > 100 else '#D97706' if pct > 85 else '#16A34A'
-        col.markdown(f"""
-        <div class="kpi-card">
-          <div class="kpi-label">{lbl}</div>
-          <div class="kpi-value">NT${act:,}</div>
-          <div style="font-size:12px;color:#64748B">預算 NT${bud:,}</div>
-          <div style="font-size:18px;font-weight:700;color:{color}">{pct:.1f}%{'  ⚠️' if pct>100 else ''}</div>
-        </div>""", unsafe_allow_html=True)
+        col.markdown(f"""<div class="kpi">
+  <div class="kpi-label">{lbl}</div>
+  <div class="kpi-value">NT${act:,}</div>
+  <div class="kpi-sub">預算 NT${bud:,}</div>
+  <div style="font-size:18px;font-weight:700;color:{color}">{pct:.1f}%{'  ⚠️' if pct>100 else ''}</div>
+</div>""", unsafe_allow_html=True)
 
     st.markdown("---")
     st.markdown("#### 各項目進度條")
-
     for k, bud in BUDGET.items():
         act = budget_actual.get(k, 0)
         pct = min(act / bud * 100, 100) if bud else 0
         over = act > bud
         bar_color = '#DC2626' if over else '#2563EB'
-        warn = ' ⚠️ 超預算' if over else ''
-        st.markdown(f"""
-        <div style="margin-bottom:12px">
-          <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
-            <span style="font-weight:500">{k}</span>
-            <span style="color:#64748B">NT${act:,} / NT${bud:,} &nbsp;
-              <span style="color:{'#DC2626' if over else '#0F172A'};font-weight:600">{pct:.1f}%{warn}</span>
-            </span>
-          </div>
-          <div style="background:#E2E8F0;border-radius:99px;height:8px;overflow:hidden">
-            <div style="background:{bar_color};width:{pct:.1f}%;height:100%;border-radius:99px;transition:width .3s"></div>
-          </div>
-        </div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div style="margin-bottom:12px">
+  <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+    <span style="font-weight:500">{k}</span>
+    <span style="color:#64748B">NT${act:,} / NT${bud:,} &nbsp;
+      <span style="color:{'#DC2626' if over else '#0F172A'};font-weight:600">{pct:.1f}%{'  ⚠️' if over else ''}</span>
+    </span>
+  </div>
+  <div style="background:#E2E8F0;border-radius:99px;height:8px;overflow:hidden">
+    <div style="background:{bar_color};width:{pct:.1f}%;height:100%;border-radius:99px"></div>
+  </div>
+</div>""", unsafe_allow_html=True)
 
+    # 全渠道總進度
+    total_pct = total_act / total_bud * 100 if total_bud else 0
     st.markdown("---")
-    # 總進度
-    total_pct = total_actual / total_budget * 100 if total_budget else 0
-    st.markdown(f"""
-    <div style="background:#F1F5F9;border-radius:12px;padding:16px 20px">
-      <div style="font-weight:600;font-size:14px;margin-bottom:8px">全渠道總進度</div>
-      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px">
-        <span>NT${total_actual:,}</span>
-        <span style="color:#64748B">/ NT${total_budget:,}</span>
-      </div>
-      <div style="background:#CBD5E1;border-radius:99px;height:12px;overflow:hidden">
-        <div style="background:{'#DC2626' if total_pct>100 else '#4F46E5'};width:{min(total_pct,100):.1f}%;height:100%;border-radius:99px"></div>
-      </div>
-      <div style="font-size:20px;font-weight:700;color:{'#DC2626' if total_pct>100 else '#4F46E5'};margin-top:8px">{total_pct:.1f}%</div>
-    </div>""", unsafe_allow_html=True)
+    st.markdown(f"""<div style="background:#F1F5F9;border-radius:12px;padding:16px 20px">
+  <div style="font-weight:600;font-size:14px;margin-bottom:8px">全渠道總進度</div>
+  <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px">
+    <span>NT${total_act:,}</span>
+    <span style="color:#64748B">/ NT${total_bud:,}</span>
+  </div>
+  <div style="background:#CBD5E1;border-radius:99px;height:12px;overflow:hidden">
+    <div style="background:{'#DC2626' if total_pct>100 else '#4F46E5'};width:{min(total_pct,100):.1f}%;height:100%;border-radius:99px"></div>
+  </div>
+  <div style="font-size:20px;font-weight:700;color:{'#DC2626' if total_pct>100 else '#4F46E5'};margin-top:8px">{total_pct:.1f}%</div>
+</div>""", unsafe_allow_html=True)
 
 
 # ════════════════════════════════════════════════════
 # 轉換分析
 # ════════════════════════════════════════════════════
 with t_conv:
-    st.subheader("🔄 跨平台轉換分析")
-    st.caption("⚠️ 轉換指標僅在「進件數完開數」分頁有資料時才有效，廣告活動層級才可 join")
+    st.subheader(f"🔄 轉換分析　{S} – {E}")
+    st.markdown('<div class="note-box">⚠️ 轉換指標只在廣告活動層級有效。請在「進件數完開數」分頁填入資料後重新上傳。</div>', unsafe_allow_html=True)
 
-    # 轉換資料預覽
     if not conv_raw.empty and conv_raw['jin'].sum() > 0:
-        st.markdown("#### 轉換資料預覽")
-        st.dataframe(conv_raw[['date_str','platform','campaign','jin','wan']].head(20),
+        st.markdown("#### 轉換資料（全量）")
+        st.dataframe(conv_raw[['date_str','platform','campaign','jin','wan']].head(30),
                      use_container_width=True, hide_index=True)
     else:
-        st.info("💡 「進件數完開數」分頁目前尚無有效資料。請填入後重新上傳，系統將自動 join 至對應廣告活動。")
+        st.info("「進件數完開數」分頁目前沒有有效資料。填入後重新上傳，系統將自動 join 到各廣告活動。")
 
     st.markdown("---")
-    st.markdown("#### 各平台 CPL 比較（廣告活動層級）")
-
+    st.markdown("#### CPL 比較（廣告活動層級，選取期間）")
     cpl_rows = []
-    for lbl, camp_df in [('ASA', asa_camp), ('Google KW', kw_camp),
-                          ('PMax', pm_camp), ('META', meta_camp)]:
+    for lbl, camp_df, name_col in [
+        ('ASA', asa_c, '廣告活動'),
+        ('Google KW', kw_c, '廣告活動'),
+        ('PMax', pm_c, '廣告活動'),
+    ]:
         if camp_df.empty or 'jin' not in camp_df.columns:
             continue
         for _, row in camp_df.iterrows():
             jin = row.get('jin', 0)
-            wan = row.get('wan', 0)
-            spend = row.get('spend', 0)
             if jin > 0:
-                cpl = sdiv(spend, jin, 1, 0)
                 cpl_rows.append({
-                    '平台': lbl,
-                    '廣告活動': row.get('廣告活動', row.get('camp', row.get('camp_short', '–'))),
-                    '花費': f"NT${spend:,.0f}",
+                    '平台':   lbl,
+                    '廣告活動': row.get(name_col, '–'),
+                    '花費':   f"NT${row.get('spend',0):,.0f}",
                     '進件數': int(jin),
-                    '完開數': int(wan),
-                    'CPL': f"NT${cpl:,.0f}",
-                    '進件率%': f"{sdiv(jin, row.get('clk', row.get('dl', 1)), 100):.2f}%",
-                    '完開率%': f"{sdiv(wan, jin, 100):.1f}%",
+                    '完開數': int(row.get('wan', 0)),
+                    'CPL':   f"NT${sdiv(row.get('spend',0), jin, 1, 0):,.0f}",
                 })
-
     if cpl_rows:
-        cpl_df = pd.DataFrame(cpl_rows)
-        st.dataframe(cpl_df, use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(cpl_rows), use_container_width=True, hide_index=True)
     else:
-        st.info("填入轉換資料後，這裡將顯示各平台 CPL 比較。")
+        st.caption("填入轉換資料後，這裡將顯示各平台 CPL 比較。")
 
     # 漏斗圖
     st.markdown("---")
-    st.markdown("#### 轉換漏斗（全平台合計）")
+    st.markdown("#### 轉換漏斗（選取期間，全平台合計）")
     all_camp = pd.concat([
-        asa_camp[['spend','clk','dl','jin','wan']].rename(columns={'dl':'mid'}) if not asa_camp.empty else pd.DataFrame(),
-        kw_camp[['spend','clk','jin','wan']].assign(mid=0) if not kw_camp.empty else pd.DataFrame(),
-        pm_camp[['spend','clk','jin','wan']].assign(mid=0) if not pm_camp.empty else pd.DataFrame(),
-        meta_camp[['spend','clk','jin','wan']].assign(mid=0) if not meta_camp.empty else pd.DataFrame(),
+        asa_c[['clk','dl','jin','wan']].rename(columns={'dl':'mid'}) if not asa_c.empty else pd.DataFrame(),
+        kw_c[['clk','jin','wan']].assign(mid=0) if not kw_c.empty else pd.DataFrame(),
+        pm_c[['clk','jin','wan']].assign(mid=0) if not pm_c.empty else pd.DataFrame(),
     ], ignore_index=True)
 
     if not all_camp.empty:
-        funnel_data = {
-            '點擊': all_camp['clk'].sum() if 'clk' in all_camp.columns else 0,
-            '進件': all_camp['jin'].sum() if 'jin' in all_camp.columns else 0,
-            '完開': all_camp['wan'].sum() if 'wan' in all_camp.columns else 0,
-        }
-        funnel_df = pd.DataFrame({'階段': list(funnel_data.keys()), '人數': list(funnel_data.values())})
-        if funnel_df['人數'].sum() > 0:
+        total_click_f = sc(all_camp, 'clk')
+        total_jin_f   = sc(all_camp, 'jin')
+        total_wan_f   = sc(all_camp, 'wan')
+        if total_click_f > 0 or total_jin_f > 0:
             fig_f = go.Figure(go.Funnel(
-                y=funnel_df['階段'],
-                x=funnel_df['人數'],
+                y=['點擊 / 下載', '進件', '完開'],
+                x=[total_click_f, total_jin_f, total_wan_f],
                 textinfo='value+percent initial',
-                marker_color=[COLORS['asa'], COLORS['kw'], COLORS['pmax']],
+                marker_color=[C['asa'], C['kw'], C['pmax']],
             ))
             fig_f.update_layout(height=280, margin=dict(t=10, b=10))
             st.plotly_chart(fig_f, use_container_width=True)
