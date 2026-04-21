@@ -18,9 +18,9 @@ st.markdown("""
 # --- 1. 配置預算 (根據圖片內容設定) ---
 # 假設圖片中 Google 總預算為 400,000，ASA 為 100,000 (請依實際圖片數值修改)
 CHANNEL_BUDGETS = {
-    "Google Search": 400000,
-    "Google Pmax": 200000,
-    "ASA": 100000
+    "Google Search": 475958,
+    "Google Pmax": 300000,
+    "ASA": 474042
 }
 
 # --- 2. 側邊欄：檔案上傳與日期控制 ---
