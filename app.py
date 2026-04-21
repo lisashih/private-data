@@ -328,36 +328,7 @@ def cmp_clk(daily_c):
     if daily_c is None or daily_c.empty: return 0
     return float(daily_c['clk'].sum()) if 'clk' in daily_c.columns else 0
 
-# ── 轉換 join（用原始全量，因為轉換是廣告活動層級、不分日）─────────────
-def join_conv(camp_df, camp_key, platform):
-    if camp_df.empty: return camp_df
-    from data_processor import _get_conv
-    conv = _get_conv(conv_raw, platform)
-    camp_df = camp_df.copy()
-    if not conv.empty:
-        cg = conv.groupby('campaign').agg(jin=('jin','sum'), wan=('wan','sum')).reset_index()
-        camp_df = camp_df.merge(cg, left_on=camp_key, right_on='campaign', how='left')
-    else:
-        camp_df['jin'] = 0; camp_df['wan'] = 0
-    camp_df = camp_df.fillna(0)
-    return camp_df
 
-asa_c = join_conv(asa_c, '廣告活動', 'ASA')
-if not asa_c.empty:
-    asa_c['CPL']    = asa_c.apply(lambda r: sdiv(r['spend'], r['jin'], 1, 0), axis=1)
-    asa_c['進件率%'] = asa_c.apply(lambda r: sdiv(r['jin'], r['dl'], 100), axis=1)
-    asa_c['完開率%'] = asa_c.apply(lambda r: sdiv(r['wan'], r['jin'], 100), axis=1)
-
-kw_c = join_conv(kw_c, '廣告活動', 'Google')
-if not kw_c.empty:
-    kw_c['CPL']    = kw_c.apply(lambda r: sdiv(r['spend'], r['jin'], 1, 0), axis=1)
-    kw_c['進件率%'] = kw_c.apply(lambda r: sdiv(r['jin'], r['clk'], 100), axis=1)
-    kw_c['完開率%'] = kw_c.apply(lambda r: sdiv(r['wan'], r['jin'], 100), axis=1)
-
-pm_c = join_conv(pm_c, '廣告活動', 'Google')
-if not pm_c.empty:
-    pm_c['CPL']   = pm_c.apply(lambda r: sdiv(r['spend'], r['jin'], 1, 0), axis=1)
-    pm_c['完開率%'] = pm_c.apply(lambda r: sdiv(r['wan'], r['jin'], 100), axis=1)
 
 
 # ══════════════════════════════════════════════════════
