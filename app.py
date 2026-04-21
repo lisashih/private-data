@@ -363,8 +363,8 @@ if not pm_c.empty:
 # ══════════════════════════════════════════════════════
 # Tabs
 # ══════════════════════════════════════════════════════
-t_ov, t_asa, t_kw, t_pm, t_budget, t_conv = st.tabs([
-    "🏠 總覽", "🍎 ASA", "🔍 Google KW", "⚡ Google PMax", "💰 預算進度", "🔄 轉換分析"
+t_ov, t_asa, t_kw, t_pm, t_budget, t_conv, t_weekly = st.tabs([
+    "🏠 總覽", "🍎 ASA", "🔍 Google KW", "⚡ Google PMax", "💰 預算進度", "🔄 轉換分析", "📅 週報表"
 ])
 
 
@@ -818,3 +818,69 @@ with t_conv:
             st.plotly_chart(fig_f, use_container_width=True)
         else:
             st.caption("填入轉換資料後漏斗圖將自動更新")
+
+# ════════════════════════════════════════════════════
+# 週報表（進件數完開數週資料）
+# ════════════════════════════════════════════════════
+with t_weekly:
+    sec("📅 週報表 — 進件數 / 完開數 / 實動數")
+    conv = data.get('conv_raw', pd.DataFrame())
+
+    if conv.empty:
+        st.info("💡 尚無週轉換資料。請在「進件數完開數」分頁填入後重新上傳。\n\n格式：Week, 平台, 廣告活動, 花費, 進件數, 進件成本, 完開數, 完開成本, 完開率, 實動, 實動率")
+    else:
+        # 週次選擇
+        weeks = sorted(conv['week_str'].unique())
+        sel_week = st.selectbox("選擇週次", options=["全部"] + list(weeks), index=0)
+        df_w = conv if sel_week == "全部" else conv[conv['week_str'] == sel_week]
+
+        # 彙總 KPI
+        total_jin = df_w['jin'].sum()
+        total_wan = df_w['wan'].sum()
+        total_sd  = df_w['shidong'].sum()
+        total_spend = df_w['spend'].sum()
+
+        sec(f"彙總 — {sel_week}")
+        kpi_row([
+            ("進件數",  fmt_num(total_jin), None),
+            ("完開數",  fmt_num(total_wan), None),
+            ("實動數",  fmt_num(total_sd),  None),
+            ("整體完開率", f"{sdiv(total_wan, total_jin, 100):.1f}%", None),
+            ("整體實動率", f"{sdiv(total_sd,  total_wan, 100):.1f}%", None),
+        ])
+
+        st.markdown("---")
+        sec("各平台明細")
+        disp = df_w[['week_str','platform','campaign','jin','wan','shidong',
+                     'jin_cost','wan_cost','wan_rate']].copy()
+        disp.columns = ['週次','平台','廣告活動','進件數','完開數','實動數',
+                        '進件成本','完開成本','完開率']
+        disp['進件成本'] = disp['進件成本'].apply(lambda x: f"NT${x:,.0f}" if x > 0 else "–")
+        disp['完開成本'] = disp['完開成本'].apply(lambda x: f"NT${x:,.0f}" if x > 0 else "–")
+        disp['完開率']   = disp['完開率'].apply(lambda x: f"{x*100:.1f}%" if x > 0 else "–")
+        st.dataframe(disp, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+        # 各平台進件/完開橫向比較
+        if not df_w.empty:
+            sec("各平台進件數 vs 完開數")
+            agg = df_w.groupby('platform').agg(jin=('jin','sum'), wan=('wan','sum'), sd=('shidong','sum')).reset_index()
+            fig = go.Figure()
+            fig.add_trace(go.Bar(name='進件數', x=agg['platform'], y=agg['jin'], marker_color='#2563EB'))
+            fig.add_trace(go.Bar(name='完開數', x=agg['platform'], y=agg['wan'], marker_color='#16A34A'))
+            fig.add_trace(go.Bar(name='實動數', x=agg['platform'], y=agg['sd'],  marker_color='#D97706'))
+            fig.update_layout(barmode='group', height=280, margin=dict(t=10,b=20),
+                               legend=dict(orientation='h',y=1.1))
+            st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("---")
+    st.caption("""
+**「進件數完開數」分頁填寫格式：**
+| 欄位 | 說明 |
+|------|------|
+| Week | 週次，格式 Week15_0406~0412 |
+| 平台 | Google廣告 / ASA廣告 / Pmax廣告 |
+| 廣告活動 | 品牌字 / ASA廣告 / Pmax廣告 等 |
+| 進件數 / 完開數 / 實動 | 填入數字即可 |
+| 進件成本 / 完開成本 | 選填 |
+""")
