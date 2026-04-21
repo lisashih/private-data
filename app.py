@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 from datetime import date, timedelta
 
 from data_processor import (
-    load_data, filter_by_dates, reagg_camp_from_raw,
+    load_data, filter_dates,
     sdiv, fmt_money, fmt_num, wow_pct, shorten_camp
 )
 
@@ -264,14 +264,14 @@ pm_raw_all    = data.get('pm_raw',    pd.DataFrame())
 conv_raw      = data.get('conv_raw',  pd.DataFrame())
 
 # ── 篩選選取期 ────────────────────────────────────────
-asa_d  = filter_by_dates(asa_daily_all, 'date_str', S, E)
-kw_d   = filter_by_dates(kw_daily_all,  'date_str', S, E)
-pm_d   = filter_by_dates(pm_daily_all,  'date_str', S, E)
+asa_d  = filter_dates(asa_daily_all, 'date_str', S, E)
+kw_d   = filter_dates(kw_daily_all,  'date_str', S, E)
+pm_d   = filter_dates(pm_daily_all,  'date_str', S, E)
 
 # 廣告活動層級從 raw 重新彙總（確保日期篩選準確）
-asa_raw_f = filter_by_dates(asa_raw_all, 'date_str', S, E)
-kw_raw_f  = filter_by_dates(kw_raw_all,  'date_str', S, E)
-pm_raw_f  = filter_by_dates(pm_raw_all,  'date_str', S, E)
+asa_raw_f = filter_dates(asa_raw_all, 'date_str', S, E)
+kw_raw_f  = filter_dates(kw_raw_all,  'date_str', S, E)
+pm_raw_f  = filter_dates(pm_raw_all,  'date_str', S, E)
 
 def reagg_asa(raw_f):
     if raw_f.empty: return pd.DataFrame()
@@ -317,9 +317,9 @@ asa_kw_f = reagg_asa_kw(asa_raw_f)
 kw_kw_f  = reagg_kw_kw(kw_raw_f)
 
 # ── 篩選對比期 ────────────────────────────────────────
-asa_d_c = filter_by_dates(asa_daily_all, 'date_str', CS, CE) if use_cmp and CS else None
-kw_d_c  = filter_by_dates(kw_daily_all,  'date_str', CS, CE) if use_cmp and CS else None
-pm_d_c  = filter_by_dates(pm_daily_all,  'date_str', CS, CE) if use_cmp and CS else None
+asa_d_c = filter_dates(asa_daily_all, 'date_str', CS, CE) if use_cmp and CS else None
+kw_d_c  = filter_dates(kw_daily_all,  'date_str', CS, CE) if use_cmp and CS else None
+pm_d_c  = filter_dates(pm_daily_all,  'date_str', CS, CE) if use_cmp and CS else None
 
 def cmp_spend(daily_c):
     if daily_c is None or daily_c.empty: return 0
