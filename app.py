@@ -6,97 +6,103 @@ from datetime import datetime, timedelta
 # --- 1. 頁面配置與精細 UI 雕刻 (Pixel Perfect) ---
 st.set_page_config(layout="wide", page_title="Pocket BI 廣告投放儀表板", page_icon="📊")
 
-# 注入 CSS：完全還原截圖與 HTML 中的現代化 BI 介面
+# 注入 CSS：完全還原截圖中的現代化 BI 介面與配色
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap');
     
     html, body, [class*="css"] {
         font-family: 'Inter', 'Noto Sans TC', sans-serif;
-        background-color: #f5f7fa;
+        background-color: #f8fafc;
     }
 
-    /* 頂部 Tab 導覽列還原 (對應 HTML 樣式) */
+    /* 頂部 Tab 導覽列還原 (與截圖元件一模一樣) */
     .stTabs [data-baseweb="tab-list"] {
-        gap: 12px;
+        gap: 10px;
         background-color: #ffffff;
-        padding: 12px 24px;
-        border-radius: 12px;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        padding: 10px 20px;
+        border-radius: 16px;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
         margin-bottom: 24px;
-        border-bottom: 1px solid #e5e7eb;
     }
     
     .stTabs [data-baseweb="tab"] {
-        height: 48px;
-        border-radius: 8px;
-        border: 1px solid #e5e7eb;
+        height: 50px;
+        border-radius: 10px;
+        border: 1px solid #e2e8f0;
         background-color: #ffffff;
-        padding: 0 24px;
-        font-weight: 500;
-        color: #6b7280;
-        transition: all 0.2s;
+        padding: 0 30px;
+        font-weight: 600;
+        color: #64748b;
+        transition: all 0.2s ease;
     }
 
+    /* 選中狀態：與渠道色彩連動 */
     .stTabs [aria-selected="true"] {
         background-color: #2563eb !important;
         color: #ffffff !important;
         border-color: #2563eb !important;
+        box-shadow: 0 8px 15px -3px rgba(37, 99, 235, 0.3);
     }
 
-    /* 指標卡片設計還原 (Metrics Cards) */
+    /* 指標卡片設計還原 (Metrics Cards with Dynamic Left Border) */
     [data-testid="stMetric"] {
         background: white;
-        padding: 20px !important;
-        border-radius: 12px !important;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1) !important;
-        border-left: 5px solid #2563eb;
+        padding: 24px !important;
+        border-radius: 16px !important;
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.04) !important;
+        border: 1px solid #f1f5f9 !important;
+        border-left: 6px solid #2563eb !important; /* 預設藍色 */
     }
     
-    /* 針對不同渠道設定邊框顏色 */
-    div[data-testid="stVerticalBlock"] > div:nth-child(1) [data-testid="stMetric"] { border-left-color: #8b5cf6; } /* ASA */
+    /* 不同渠道頁面的卡片邊框色雕刻 */
+    .asa-theme [data-testid="stMetric"] { border-left-color: #8b5cf6 !important; }
+    .gkw-theme [data-testid="stMetric"] { border-left-color: #2563eb !important; }
+    .pmax-theme [data-testid="stMetric"] { border-left-color: #10b981 !important; }
     
-    /* 數值樣式 */
     [data-testid="stMetricValue"] {
         font-weight: 700 !important;
-        color: #111827 !important;
+        color: #1e293b !important;
+        font-size: 1.8rem !important;
     }
 
-    /* 側邊欄與進度條自定義 */
+    /* 進度條樣式優化 */
+    .stProgress > div > div > div > div {
+        background: linear-gradient(90deg, #3b82f6 0%, #2563eb 100%);
+        border-radius: 10px;
+    }
+
+    /* 側邊欄與表格微調 */
     section[data-testid="stSidebar"] {
         background-color: #ffffff;
+        border-right: 1px solid #f1f5f9;
     }
-    .stProgress > div > div > div > div {
-        background-color: #2563eb;
-    }
-    
-    /* 表格字體縮小以符合 BI 樣式 */
     .dataframe {
-        font-size: 12px !important;
+        font-size: 13px !important;
+        border-radius: 12px;
     }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 側邊欄：BI 參數設定與資料上傳 ---
+# --- 2. 側邊欄：控制中心 ---
 with st.sidebar:
-    st.markdown("<h2 style='color:#111827;'>📊 BI 控制中心</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='color:#1e293b;'>⚙️ BI 控制中心</h2>", unsafe_allow_html=True)
     uploaded_file = st.file_uploader("📂 上傳數據 (廣告raw-2.xlsx)", type=["xlsx"])
     
     st.divider()
-    st.subheader("💰 預算目標 (月度)")
+    st.subheader("💰 月度預算指標")
     val_asa = st.number_input("ASA 目標", value=150000, step=10000)
     val_gkw = st.number_input("Google KW 目標", value=500000, step=10000)
     val_pmax = st.number_input("Google Pmax 目標", value=200000, step=10000)
     
     st.divider()
-    st.subheader("📅 對比波段 (WOW)")
-    # 預設為截圖中的典型區間
+    st.subheader("📅 對比區間 (WOW)")
     c_s = st.date_input("本週起", datetime(2026, 4, 13))
     c_e = st.date_input("本週迄", datetime(2026, 4, 19))
     p_s = st.date_input("上週起", datetime(2026, 4, 6))
     p_e = st.date_input("上週迄", datetime(2026, 4, 12))
 
-# --- 3. 核心數據處理引擎 (與 HTML 邏輯同步) ---
+# --- 3. 數據處理引擎 ---
 @st.cache_data
 def load_and_clean_data(file):
     if file is None: return None
@@ -104,7 +110,6 @@ def load_and_clean_data(file):
     sheets = xls.sheet_names
     
     all_data = []
-    # 渠道配置映射 (依照 HTML 中的定義)
     configs = [
         {'id': 'ASA', 'tag': 'ASA', 'cost_col': '花費（台幣）', 'color': '#8b5cf6'},
         {'id': 'Google KW', 'tag': 'KW', 'cost_col': '花費', 'color': '#2563eb'},
@@ -116,7 +121,6 @@ def load_and_clean_data(file):
         if sheet_name:
             df = pd.read_excel(file, sheet_name=sheet_name)
             df.columns = df.columns.str.strip()
-            # 處理日期格式 (兼容多種格式)
             df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
             df = df.dropna(subset=['Date'])
             
@@ -133,114 +137,86 @@ def load_and_clean_data(file):
             
     return pd.concat(all_data, ignore_index=True) if all_data else None
 
-# --- 4. BI 畫面渲染 (與規劃一模一樣) ---
+# --- 4. BI 元件渲染 (與截圖一模一樣) ---
 if uploaded_file:
     df_raw = load_and_clean_data(uploaded_file)
     
     if df_raw is not None:
-        # 導覽分頁
-        tab_sum, tab_asa, tab_gkw, tab_pmax = st.tabs([
-            "🏠 總覽數據", "🟣 ASA 分析", "🔵 Google KW", "🟢 Pmax 監控"
-        ])
+        tab1, tab2, tab3, tab4 = st.tabs(["🏠 總覽數據", "🟣 ASA 分析", "🔵 Google KW", "🟢 Pmax 監控"])
         
-        # --- 頁面 1: 數據總覽 (Dashboard) ---
-        with tab_sum:
-            st.markdown("<h2 style='color:#1e293b;'>投放執行度總覽</h2>", unsafe_allow_html=True)
+        # --- Tab 1: 總覽 ---
+        with tab1:
+            st.markdown("<h2 style='color:#1e293b;'>全渠道投放執行度</h2>", unsafe_allow_html=True)
             
-            # 執行率進度條區域
-            col1, col2, col3 = st.columns(3)
-            channels_list = [
-                ("ASA", val_asa, col1, "#8b5cf6"),
-                ("Google KW", val_gkw, col2, "#2563eb"),
-                ("Google Pmax", val_pmax, col3, "#10b981")
-            ]
+            c1, c2, c3 = st.columns(3)
+            budgets = [("ASA", val_asa, c1, "#8b5cf6"), ("Google KW", val_gkw, c2, "#2563eb"), ("Google Pmax", val_pmax, c3, "#10b981")]
             
-            for name, target, col, color in channels_list:
+            for name, target, col, color in budgets:
                 actual = df_raw[df_raw['Channel'] == name]['Metric_Cost'].sum()
                 percent = min(actual / target, 1.0) if target > 0 else 0
                 with col:
-                    st.markdown(f"**{name}**")
+                    st.markdown(f"<b style='color:#475569;'>{name}</b>", unsafe_allow_html=True)
                     st.progress(percent)
-                    st.markdown(f"<span style='color:#6b7280; font-size:12px;'>已花費: ${actual:,.0f} / 目標: ${target:,.0f} ({percent:.1%})</span>", unsafe_allow_html=True)
+                    st.markdown(f"<span style='color:#64748b; font-size:13px;'>已花費: ${actual:,.0f} / 目標: ${target:,.0f} ({percent:.1%})</span>", unsafe_allow_html=True)
 
             st.divider()
-            
-            # 花費趨勢圖 (與 HTML/截圖風格一致)
-            st.subheader("📊 每日投放花費趨勢")
+            st.subheader("📈 每日投放金額走勢")
             fig = go.Figure()
-            for name, target, col, color in channels_list:
+            for name, target, col, color in budgets:
                 daily = df_raw[df_raw['Channel'] == name].groupby('Date')['Metric_Cost'].sum().reset_index()
-                fig.add_trace(go.Scatter(
-                    x=daily['Date'], y=daily['Metric_Cost'], 
-                    name=name, line=dict(color=color, width=3, shape='spline')
-                ))
+                fig.add_trace(go.Scatter(x=daily['Date'], y=daily['Metric_Cost'], name=name, line=dict(color=color, width=4, shape='spline')))
             
-            fig.update_layout(
-                template="plotly_white", 
-                hovermode="x unified",
-                margin=dict(l=10, r=10, t=20, b=10),
-                height=400,
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-            )
+            fig.update_layout(template="simple_white", hovermode="x unified", height=420, margin=dict(l=20, r=20, t=30, b=20))
             st.plotly_chart(fig, use_container_width=True)
 
-        # --- 頁面 2/3/4: 渠道深度分析 ---
-        def render_channel_bi(channel_name, theme_color):
-            st.markdown(f"<h2 style='color:{theme_color};'>{channel_name} 數據詳情</h2>", unsafe_allow_html=True)
+        # --- Tab 2, 3, 4: 渠道詳情 (深度還原) ---
+        def render_channel_page(cid, title, color, theme_class):
+            # 透過 div wrapper 套用主題 class
+            st.markdown(f"<div class='{theme_class}'>", unsafe_allow_html=True)
+            st.markdown(f"<h2 style='color:{color};'>{title}</h2>", unsafe_allow_html=True)
             
-            # 時間段切片
-            curr_df = df_raw[(df_raw['Date'] >= pd.Timestamp(c_s)) & (df_raw['Date'] <= pd.Timestamp(c_e)) & (df_raw['Channel'] == channel_name)]
-            prev_df = df_raw[(df_raw['Date'] >= pd.Timestamp(p_s)) & (df_raw['Date'] <= pd.Timestamp(p_e)) & (df_raw['Channel'] == channel_name)]
+            curr = df_raw[(df_raw['Date'] >= pd.Timestamp(c_s)) & (df_raw['Date'] <= pd.Timestamp(c_e)) & (df_raw['Channel'] == cid)]
+            prev = df_raw[(df_raw['Date'] >= pd.Timestamp(p_s)) & (df_raw['Date'] <= pd.Timestamp(p_e)) & (df_raw['Channel'] == cid)]
             
-            # 指標計算
-            c_cost, c_conv, c_click = curr_df['Metric_Cost'].sum(), curr_df['Metric_Conv'].sum(), curr_df['Metric_Click'].sum()
-            p_cost, p_conv, p_click = prev_df['Metric_Cost'].sum(), prev_df['Metric_Conv'].sum(), prev_df['Metric_Click'].sum()
+            c_vals = {'cost': curr['Metric_Cost'].sum(), 'conv': curr['Metric_Conv'].sum(), 'clk': curr['Metric_Click'].sum()}
+            p_vals = {'cost': prev['Metric_Cost'].sum(), 'conv': prev['Metric_Conv'].sum(), 'clk': prev['Metric_Click'].sum()}
             
-            def wow(c, p):
-                if p == 0: return "N/A"
-                return f"{(c-p)/p:+.1%}"
+            def get_delta(c, p): return f"{(c-p)/p:+.1%}" if p > 0 else "N/A"
 
-            # 頂部四格核心指標
-            m1, m2, m3, m4 = st.columns(4)
-            with m1:
-                st.metric("本週進件數", f"{c_conv:,.0f}", wow(c_conv, p_conv))
-            with m2:
-                c_cpa = c_cost / c_conv if c_conv > 0 else 0
-                p_cpa = p_cost / p_conv if p_conv > 0 else 0
-                st.metric("CPA (進件成本)", f"${c_cpa:,.0f}", wow(c_cpa, p_cpa), delta_color="inverse")
-            with m3:
-                st.metric("本週總花費", f"${c_cost:,.0f}", wow(c_cost, p_cost), delta_color="inverse")
-            with m4:
-                cvr = c_conv / c_click if c_click > 0 else 0
-                st.metric("轉化率 (CVR)", f"{cvr:.2%}")
+            # 四格圖卡與邊框色彩
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("本週進件數", f"{c_vals['conv']:,.0f}", get_delta(c_vals['conv'], p_vals['conv']))
+            
+            cur_cpa = c_vals['cost']/c_vals['conv'] if c_vals['conv'] > 0 else 0
+            pre_cpa = p_vals['cost']/p_vals['conv'] if p_vals['conv'] > 0 else 0
+            k2.metric("CPA (進件成本)", f"${cur_cpa:,.0f}", get_delta(cur_cpa, pre_cpa), delta_color="inverse")
+            
+            k3.metric("本週總花費", f"${c_vals['cost']:,.0f}", get_delta(c_vals['cost'], p_vals['cost']), delta_color="inverse")
+            
+            cvr = c_vals['conv']/c_vals['clk'] if c_vals['clk'] > 0 else 0
+            k4.metric("轉化率 (CVR)", f"{cvr:.2%}")
 
             st.divider()
-            
-            # 下方明細表格 (與 HTML Table 規劃一致)
-            st.write("📋 廣告活動與關鍵字明細")
-            details = curr_df.groupby(['廣告活動', '廣告關鍵字']).agg({
-                'Metric_Cost': 'sum',
-                'Metric_Conv': 'sum',
-                'Metric_Click': 'sum',
-                'Metric_Impr': 'sum'
-            }).reset_index().rename(columns={
-                'Metric_Cost': '花費', 'Metric_Conv': '進件', 'Metric_Click': '點擊', 'Metric_Impr': '曝光'
-            }).sort_values('花費', ascending=False)
-            
-            st.dataframe(details, use_container_width=True, height=450)
+            st.write("📋 廣告數據明細清單")
+            table_data = curr.groupby(['廣告活動', '廣告關鍵字']).agg({
+                'Metric_Cost': 'sum', 'Metric_Conv': 'sum', 'Metric_Click': 'sum', 'Metric_Impr': 'sum'
+            }).reset_index().rename(columns={'Metric_Cost': '花費', 'Metric_Conv': '進件', 'Metric_Click': '點擊', 'Metric_Impr': '曝光'}).sort_values('花費', ascending=False)
+            st.dataframe(table_data, use_container_width=True, height=450)
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        with tab_asa: render_channel_bi("ASA", "#8b5cf6")
-        with tab_gkw: render_channel_bi("Google KW", "#2563eb")
-        with tab_pmax: render_channel_bi("Google Pmax", "#10b981")
+        with tab2: render_channel_page("ASA", "ASA 深度分析", "#8b5cf6", "asa-theme")
+        with tab3: render_channel_page("Google KW", "Google KW 成效監控", "#2563eb", "gkw-theme")
+        with tab4: render_channel_page("Google Pmax", "Pmax 投放成效", "#10b981", "pmax-theme")
 
 else:
-    # 待機畫面 (空狀態規劃)
     st.markdown("""
-        <div style="text-align: center; padding: 100px 20px; border: 2px dashed #e5e7eb; border-radius: 20px; background: white;">
-            <h2 style="color: #4b5563;">歡迎使用 Pocket BI 廣告監控系統</h2>
-            <p style="color: #9ca3af;">請在左側側邊欄上傳您的原始數據檔案 (.xlsx) 以開始分析</p>
-            <div style="margin-top: 20px;">
-                <span style="background: #f3f4f6; padding: 8px 16px; border-radius: 100px; color: #6b7280; font-size: 14px;">自動支援 ASA / Google KW / Pmax</span>
+        <div style="text-align: center; padding: 120px 20px; background: white; border-radius: 24px; border: 2px dashed #e2e8f0; margin-top: 40px;">
+            <h1 style="color: #1e293b; font-size: 2.5rem;">廣告投放監控系統</h1>
+            <p style="color: #64748b; font-size: 1.1rem;">請上傳 Excel 檔案以呈現全渠道 BI 儀表板</p>
+            <div style="margin-top: 40px;">
+                <span style="background: #f1f5f9; padding: 10px 20px; border-radius: 12px; color: #475569; font-weight: 500;">✓ 自動分類渠道</span>
+                <span style="background: #f1f5f9; padding: 10px 20px; border-radius: 12px; color: #475569; font-weight: 500; margin-left: 10px;">✓ 即時預算監控</span>
+                <span style="background: #f1f5f9; padding: 10px 20px; border-radius: 12px; color: #475569; font-weight: 500; margin-left: 10px;">✓ WOW 週對比</span>
             </div>
         </div>
     """, unsafe_allow_html=True)
