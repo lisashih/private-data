@@ -825,62 +825,42 @@ with t_conv:
         st.info("「工作表1」分頁目前沒有有效資料。填入後重新上傳。")
 
     st.markdown("---")
-    st.markdown("#### CPL 比較（廣告活動層級，選取期間）")
-    cpl_rows = []
-    for lbl, camp_df, name_col in [
-        ('ASA', asa_c, '廣告活動'),
-        ('Google KW', kw_c, '廣告活動'),
-        ('PMax', pm_c, '廣告活動'),
-    ]:
-        if camp_df.empty or 'jin' not in camp_df.columns:
-            continue
-        for _, row in camp_df.iterrows():
-            jin = row.get('jin', 0)
-            if jin > 0:
-                cpl_rows.append({
-                    '平台':   lbl,
-                    '廣告活動': row.get(name_col, '–'),
-                    '花費':   f"NT${row.get('spend',0):,.0f}",
-                    '進件數': int(jin),
-                    '完開數': int(row.get('wan', 0)),
-                    'CPL':   f"NT${sdiv(row.get('spend',0), jin, 1, 0):,.0f}",
-                })
-    if cpl_rows:
-        st.dataframe(pd.DataFrame(cpl_rows), use_container_width=True, hide_index=True)
+    st.markdown("---")
+    st.markdown("#### CPL 比較（廣告層級，選取期間）")
+    _cpl_src = filter_dates(conv_day, 'date_str', S, E) if not conv_day.empty else pd.DataFrame()
+    if not _cpl_src.empty and _cpl_src['進件數'].sum() > 0:
+        _cpl_grp = _cpl_src.groupby(['平台','廣告']).agg(
+            spend=('spend','sum'), 進件數=('進件數','sum'), 開戶數=('開戶數','sum')
+        ).reset_index()
+        _cpl_grp = _cpl_grp[_cpl_grp['進件數'] > 0].copy()
+        _cpl_grp['進件成本'] = _cpl_grp.apply(lambda r: f"NT${sdiv(r['spend'],r['進件數'],1,0):,.0f}", axis=1)
+        _cpl_grp['開戶成本'] = _cpl_grp.apply(lambda r: f"NT${sdiv(r['spend'],r['開戶數'],1,0):,.0f}" if r['開戶數']>0 else '–', axis=1)
+        _cpl_grp['花費']    = _cpl_grp['spend'].apply(lambda x: f"NT${x:,.0f}")
+        _cpl_grp['開戶率%'] = _cpl_grp.apply(lambda r: f"{sdiv(r['開戶數'],r['進件數'],100,1):.1f}%", axis=1)
+        st.dataframe(_cpl_grp[['平台','廣告','花費','進件數','開戶數','進件成本','開戶成本','開戶率%']],
+                     use_container_width=True, hide_index=True)
     else:
-        st.caption("填入轉換資料後，這裡將顯示各平台 CPL 比較。")
+        st.caption("填入轉換資料後，這裡將顯示各廣告 CPL 比較。")
 
     # 漏斗圖
     st.markdown("---")
     st.markdown("#### 轉換漏斗（選取期間，全平台合計）")
-    def _safe_funnel_row(df, has_dl=False):
-        if df.empty: return pd.DataFrame()
-        row = pd.DataFrame({'clk': [sc(df,'clk')], 'mid': [sc(df,'dl') if has_dl else 0],
-                            'jin': [sc(df,'jin')], 'wan': [sc(df,'wan')]})
-        return row
-    all_camp = pd.concat([
-        _safe_funnel_row(asa_c, has_dl=True),
-        _safe_funnel_row(kw_c,  has_dl=False),
-        _safe_funnel_row(pm_c,  has_dl=False),
-    ], ignore_index=True)
+    _funnel_src = filter_dates(conv_day, 'date_str', S, E) if not conv_day.empty else pd.DataFrame()
+    total_click_f = sc(asa_d, 'clk') + sc(kw_d, 'clk') + sc(pm_d, 'clk')
+    total_jin_f   = float(_funnel_src['進件數'].sum()) if not _funnel_src.empty else 0
+    total_wan_f   = float(_funnel_src['開戶數'].sum()) if not _funnel_src.empty else 0
+    if total_click_f > 0 or total_jin_f > 0:
+        fig_f = go.Figure(go.Funnel(
+            y=['點擊', '進件', '完開'],
+            x=[total_click_f, total_jin_f, total_wan_f],
+            textinfo='value+percent initial',
+            marker_color=[C['asa'], C['kw'], C['pmax']],
+        ))
+        fig_f.update_layout(height=280, margin=dict(t=10, b=10))
+        st.plotly_chart(fig_f, use_container_width=True)
+    else:
+        st.caption("填入轉換資料後漏斗圖將自動更新")
 
-    if not all_camp.empty:
-        total_click_f = sc(all_camp, 'clk')
-        total_jin_f   = sc(all_camp, 'jin')
-        total_wan_f   = sc(all_camp, 'wan')
-        if total_click_f > 0 or total_jin_f > 0:
-            fig_f = go.Figure(go.Funnel(
-                y=['點擊 / 下載', '進件', '完開'],
-                x=[total_click_f, total_jin_f, total_wan_f],
-                textinfo='value+percent initial',
-                marker_color=[C['asa'], C['kw'], C['pmax']],
-            ))
-            fig_f.update_layout(height=280, margin=dict(t=10, b=10))
-            st.plotly_chart(fig_f, use_container_width=True)
-        else:
-            st.caption("填入轉換資料後漏斗圖將自動更新")
-
-# ════════════════════════════════════════════════════
 # 週報表（進件/開戶 天+週 維度）
 # ════════════════════════════════════════════════════
 with t_weekly:
