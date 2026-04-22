@@ -3,17 +3,18 @@
 
 【2026/04 最新架構】
 xlsx 包含：
-  1. ASA           - 欄位：Date, week, 廣告活動, 廣告群組, 廣告關鍵字, 曝光, 點擊, 下載數, 花費（美金）, 花費（台幣）
-  2. Google KW     - 欄位：Date, week, 廣告活動, 廣告群組, 廣告關鍵字, 曝光, 點擊, 花費
-  3. Google Pmax   - 欄位：Date, week, 廣告活動, 曝光, 點擊, 花費
-  4. 進件數完開數   - 欄位：Week, 平台, 廣告活動, 花費, 進件數, 進件成本, 完開數, 完開成本, 完開率, 實動, 實動率
-                     週為單位，平台 = Google廣告 / ASA廣告 / Pmax廣告
-                     廣告活動 = 品牌字 / ASA廣告 / Pmax廣告 等
+  1. ASA           - 欄位：Date, 廣告活動, 廣告群組, 廣告關鍵字, 曝光, 點擊, 下載數, 花費（美金）, 花費（台幣）
+  2. Google KW     - 欄位：Date, 廣告活動, 廣告群組, 廣告關鍵字, 曝光, 點擊, 花費
+  3. Google Pmax   - 欄位：Date, 廣告活動, 曝光, 點擊, 花費
+  4. 工作表1（進件明細）- 欄位：date, week, 平台, 廣告, 開戶狀態, 人數
+     進件數 = 某天某廣告所有開戶狀態人數總和（開戶已完成 + 開戶未完成）
+     開戶數 = 某天某廣告「開戶已完成」人數總和
+     開戶率 = 開戶數 / 進件數
+     花費   = 該廣告所屬平台（01-Google廣告→KW+PMax，03-APP廣告→ASA）的花費加總
 
-【進件/完開 join 邏輯】
-  - 以「週」為單位，週範圍解析自 Week15_0406~0412 格式（月日）
-  - 每筆廣告日資料依日期判斷落在哪個週，再對應進件數完開數
-  - 平台對應：ASA → ASA廣告, Google KW → Google廣告品牌字, PMax → Pmax廣告
+【輸出】
+  conv_day  - 天維度：date_str, 平台, 廣告, 曝光, 點擊, 花費, 進件數, 開戶數, 進件成本, 開戶成本, 開戶率%
+  conv_week - 週維度：week, 平台, 廣告, 曝光, 點擊, 花費, 進件數, 開戶數, 進件成本, 開戶成本, 開戶率%
 """
 import pandas as pd
 import numpy as np
@@ -60,7 +61,7 @@ def fix_asa_dates(series: pd.Series) -> pd.Series:
 def parse_week_range(week_str: str, year: int = 2026):
     """
     解析 'Week15_0406~0412' → (start_date, end_date)
-    月日格式 MMDD，補上年份
+    格式 MMDD，年份預設 2026
     """
     try:
         m = re.match(r'Week\d+_(\d{2})(\d{2})~(\d{2})(\d{2})', week_str)
@@ -74,7 +75,7 @@ def parse_week_range(week_str: str, year: int = 2026):
     return None, None
 
 
-# ── 數值工具 ──────────────────────────────────────────
+# ── 輔助工具 ──────────────────────────────────────────
 def sdiv(a, b, scale=1, dec=2):
     try:
         if b and float(b) != 0:
@@ -114,43 +115,202 @@ def wow_pct(cur, prev):
 def shorten_camp(n: str) -> str:
     n = str(n)
     if '品牌字' in n: return '品牌字'
-    if '郵局字' in n: return '郵局字'
+    if '廣字' in n: return '廣字'
     if '投資入門' in n: return '投資入門'
     if 'PMAX' in n.upper() or 'Pmax' in n: return 'PMax'
     return n[:16]
 
 
 # ══════════════════════════════════════════════════════
-# 主要讀取函式
+# 主要資料載入
 # ══════════════════════════════════════════════════════
 def load_data(file) -> dict:
     """讀取 xlsx，回傳全量資料字典（不做時間切割）"""
     sheets = pd.read_excel(file, sheet_name=None)
     out = {}
 
-    # 讀取進件數完開數（週為單位）
-    conv_df = _load_conv(sheets.get('進件數完開數', pd.DataFrame()))
-    out['conv_raw'] = conv_df
+    # 先載入廣告平台原始資料
+    out.update(_load_asa(sheets.get('ASA', pd.DataFrame())))
+    out.update(_load_kw(sheets.get('Google KW', pd.DataFrame())))
+    out.update(_load_pmax(sheets.get('Google Pmax', pd.DataFrame())))
 
-    out.update(_load_asa(sheets.get('ASA', pd.DataFrame()), conv_df))
-    out.update(_load_kw(sheets.get('Google KW', pd.DataFrame()), conv_df))
-    out.update(_load_pmax(sheets.get('Google Pmax', pd.DataFrame()), conv_df))
+    # 載入進件明細（新格式：工作表1；舊格式：進件數完開數）
+    detail_sheet = sheets.get('工作表1', sheets.get('進件數完開數', pd.DataFrame()))
+    conv_day, conv_week = _load_conv_detail(
+        detail_sheet,
+        asa_raw=out.get('asa_raw', pd.DataFrame()),
+        kw_raw=out.get('kw_raw', pd.DataFrame()),
+        pm_raw=out.get('pm_raw', pd.DataFrame()),
+    )
+    out['conv_day']  = conv_day
+    out['conv_week'] = conv_week
+    # 向後相容舊的 conv_raw key
+    out['conv_raw']  = conv_week
 
     out['meta'] = _build_meta(out)
     return out
 
 
-# ── 進件數完開數（週單位）────────────────────────────
-def _load_conv(df: pd.DataFrame) -> pd.DataFrame:
+# ── 進件明細處理（新格式：工作表1）─────────────────────
+def _load_conv_detail(df: pd.DataFrame, asa_raw: pd.DataFrame,
+                      kw_raw: pd.DataFrame, pm_raw: pd.DataFrame):
     """
-    解析週轉換資料，回傳包含 start/end 日期範圍的表
-    欄位：week_str, platform, campaign, start_date, end_date,
-          jin, wan, shidong, jin_cost, wan_cost, wan_rate
+    從工作表1明細計算天/週維度的進件/開戶報表，並 join 廣告花費。
+
+    平台對應規則：
+      01-Google廣告 → 花費 = KW + PMax（按各廣告名稱比例分配）
+      03-APP廣告    → 花費 = ASA
+
+    廣告名稱對應（conv 廣告 → 媒體廣告活動）：
+      手動定義 mapping，找不到的廣告花費設為 0
     """
     if df.empty:
-        return pd.DataFrame()
-    df = df.copy().dropna(subset=['Week', '平台'])
+        return pd.DataFrame(), pd.DataFrame()
+
+    df = df.copy()
     df.columns = [c.strip() for c in df.columns]
+
+    # 判斷是新格式（工作表1）還是舊格式
+    if '開戶狀態' in df.columns and '人數' in df.columns:
+        return _process_new_conv(df, asa_raw, kw_raw, pm_raw)
+    else:
+        return _process_old_conv(df)
+
+
+def _process_new_conv(df: pd.DataFrame, asa_raw: pd.DataFrame,
+                      kw_raw: pd.DataFrame, pm_raw: pd.DataFrame):
+    """處理新格式（工作表1）進件明細"""
+    df = df.copy()
+    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+    df = df[df['date'].notna()].copy()
+    df['date_str'] = df['date'].dt.strftime('%Y-%m-%d')
+    df['人數'] = pd.to_numeric(df['人數'], errors='coerce').fillna(0)
+
+    # 建立天維度進件/開戶
+    grp_cols = ['date_str', 'date', 'week', '平台', '廣告']
+
+    # 進件數 = 所有狀態人數總和
+    jin_day = df.groupby(grp_cols)['人數'].sum().rename('進件數').reset_index()
+
+    # 開戶數 = 開戶已完成人數
+    wan_mask = df['開戶狀態'] == '開戶已完成'
+    wan_day = df[wan_mask].groupby(grp_cols)['人數'].sum().rename('開戶數').reset_index()
+
+    day = jin_day.merge(wan_day, on=grp_cols, how='left').fillna({'開戶數': 0})
+    day['開戶率%'] = day.apply(lambda r: sdiv(r['開戶數'], r['進件數'], 100, 1), axis=1)
+
+    # 建立天維度花費（從廣告 raw 資料按平台+日期彙總）
+    spend_day = _build_spend_by_ad_day(asa_raw, kw_raw, pm_raw)
+    if not spend_day.empty:
+        day = day.merge(spend_day, on=['date_str', '廣告'], how='left').fillna(
+            {'spend': 0, 'imp': 0, 'clk': 0})
+    else:
+        day['spend'] = 0; day['imp'] = 0; day['clk'] = 0
+
+    day['進件成本'] = day.apply(lambda r: sdiv(r['spend'], r['進件數'], 1, 0), axis=1)
+    day['開戶成本'] = day.apply(lambda r: sdiv(r['spend'], r['開戶數'], 1, 0), axis=1)
+    day = day.sort_values(['date_str', '平台', '廣告'])
+
+    # 週維度：從天資料彙總
+    week_grp = ['week', '平台', '廣告']
+    week = day.groupby(week_grp).agg(
+        進件數=('進件數', 'sum'),
+        開戶數=('開戶數', 'sum'),
+        spend=('spend', 'sum'),
+        imp=('imp', 'sum'),
+        clk=('clk', 'sum'),
+    ).reset_index()
+    week['開戶率%'] = week.apply(lambda r: sdiv(r['開戶數'], r['進件數'], 100, 1), axis=1)
+    week['進件成本'] = week.apply(lambda r: sdiv(r['spend'], r['進件數'], 1, 0), axis=1)
+    week['開戶成本'] = week.apply(lambda r: sdiv(r['spend'], r['開戶數'], 1, 0), axis=1)
+    # 加上週起訖日期
+    week['start_date'] = week['week'].apply(lambda w: parse_week_range(w)[0])
+    week['end_date']   = week['week'].apply(lambda w: parse_week_range(w)[1])
+    week = week.sort_values(['week', '平台', '廣告'])
+
+    return day, week
+
+
+def _build_spend_by_ad_day(asa_raw, kw_raw, pm_raw):
+    """
+    建立「廣告名稱」→「天花費/曝光/點擊」的對照表。
+    KW 和 PMax 完全分開對應，ASA 依台股/美股分開。
+
+    KW 廣告活動對應：
+      MKUS01_關鍵字_0916_品牌字              → Google關鍵字_台美股_品牌字
+      MKADCH CHBG12_關鍵字_1015_郵局字       → Google關鍵字_郵局_郵局字
+      MKADGO CHBG01/02_關鍵字_1218_投資入門字 → Google關鍵字_投資入門_ETF/存股字
+      其他含「品牌字」                         → Google關鍵字_台美股_品牌字
+
+    PMax：
+      全部 PMax 活動 → Google PMAX_台美股
+      （Google PMAX_郵局 目前 raw 無對應，花費顯示 0）
+
+    ASA：
+      含「台股」 → ASA_台股APP iOS 登入頁 開戶按鈕
+      其他       → ASA_美股APP iOS 登入頁 開戶按鈕
+    """
+    records = []
+
+    # ---- Google KW（精確 mapping）----
+    KW_MAP = {
+        'MKUS01_關鍵字_0916_品牌字':               'Google關鍵字_台美股_品牌字',
+        'MKADCH CHBG12_關鍵字_1015_郵局字':        'Google關鍵字_郵局_郵局字',
+        'MKADGO CHBG01/02_關鍵字_1218_投資入門字': 'Google關鍵字_投資入門_ETF/存股字',
+    }
+    if not kw_raw.empty:
+        kw = kw_raw.copy()
+        def kw_ad_map(camp):
+            # 精確 mapping 優先
+            if camp in KW_MAP:
+                return KW_MAP[camp]
+            camp_u = str(camp).upper()
+            if '郵局' in camp_u: return 'Google關鍵字_郵局_郵局字'
+            if '投資入門' in camp_u: return 'Google關鍵字_投資入門_ETF/存股字'
+            if '美股' in camp_u: return 'Google關鍵字_美股_品牌字'
+            return 'Google關鍵字_台美股_品牌字'
+        kw['廣告'] = kw['廣告活動'].apply(kw_ad_map)
+        kw_spend = kw.groupby(['date_str', '廣告']).agg(
+            spend=('spend','sum'), imp=('imp','sum'), clk=('clk','sum')
+        ).reset_index()
+        records.append(kw_spend)
+
+    # ---- Google PMax（全部歸台美股，郵局 raw 無對應）----
+    if not pm_raw.empty:
+        pm = pm_raw.copy()
+        pm['廣告'] = 'Google PMAX_台美股'
+        pm_spend = pm.groupby(['date_str', '廣告']).agg(
+            spend=('spend','sum'), imp=('imp','sum'), clk=('clk','sum')
+        ).reset_index()
+        records.append(pm_spend)
+
+    # ---- ASA（台股/美股分開）----
+    if not asa_raw.empty:
+        asa = asa_raw.copy()
+        def asa_ad_map(camp):
+            camp_s = str(camp)
+            if '台股' in camp_s or ('台' in camp_s and '美' not in camp_s):
+                return 'ASA_台股APP iOS 登入頁 開戶按鈕'
+            return 'ASA_美股APP iOS 登入頁 開戶按鈕'
+        asa['廣告'] = asa['廣告活動'].apply(asa_ad_map)
+        asa_spend = asa.groupby(['date_str', '廣告']).agg(
+            spend=('spend','sum'), imp=('imp','sum'), clk=('clk','sum')
+        ).reset_index()
+        records.append(asa_spend)
+
+    if not records:
+        return pd.DataFrame()
+
+    result = pd.concat(records, ignore_index=True)
+    result = result.groupby(['date_str', '廣告']).agg(
+        spend=('spend','sum'), imp=('imp','sum'), clk=('clk','sum')
+    ).reset_index()
+    return result
+
+
+def _process_old_conv(df: pd.DataFrame):
+    """舊格式（進件數完開數）相容處理"""
+    df = df.copy().dropna(subset=['Week', '平台'])
     records = []
     for _, row in df.iterrows():
         ws = str(row.get('Week', ''))
@@ -158,66 +318,25 @@ def _load_conv(df: pd.DataFrame) -> pd.DataFrame:
         if start is None:
             continue
         records.append({
-            'week_str':   ws,
-            'platform':   str(row.get('平台', '')),
-            'campaign':   str(row.get('廣告活動', '')),
+            'week':      ws,
+            '平台':       str(row.get('平台', '')),
+            '廣告':       str(row.get('廣告活動', '')),
             'start_date': start,
             'end_date':   end,
-            'jin':        pd.to_numeric(row.get('進件數', 0), errors='coerce') or 0,
-            'wan':        pd.to_numeric(row.get('完開數', 0), errors='coerce') or 0,
-            'shidong':    pd.to_numeric(row.get('實動', 0), errors='coerce') or 0,
-            'jin_cost':   pd.to_numeric(row.get('進件成本', 0), errors='coerce') or 0,
-            'wan_cost':   pd.to_numeric(row.get('完開成本', 0), errors='coerce') or 0,
-            'wan_rate':   pd.to_numeric(row.get('完開率', 0), errors='coerce') or 0,
-            'spend':      pd.to_numeric(row.get('花費', 0), errors='coerce') or 0,
+            '進件數':     pd.to_numeric(row.get('進件數', 0), errors='coerce') or 0,
+            '開戶數':     pd.to_numeric(row.get('完開數', 0), errors='coerce') or 0,
+            'spend':     pd.to_numeric(row.get('花費', 0), errors='coerce') or 0,
+            '進件成本':   pd.to_numeric(row.get('進件成本', 0), errors='coerce') or 0,
+            '開戶成本':   pd.to_numeric(row.get('完開成本', 0), errors='coerce') or 0,
+            '開戶率%':    pd.to_numeric(row.get('完開率', 0), errors='coerce') or 0,
+            'imp': 0, 'clk': 0,
         })
-    return pd.DataFrame(records) if records else pd.DataFrame()
-
-
-def _get_conv_for_platform(conv_df: pd.DataFrame, platform_kw: str) -> pd.DataFrame:
-    """取出特定平台的週轉換資料"""
-    if conv_df.empty:
-        return pd.DataFrame()
-    mask = conv_df['platform'].str.contains(platform_kw, case=False, na=False)
-    return conv_df[mask].copy()
-
-
-def _assign_week_conv(daily_df: pd.DataFrame, conv_platform: pd.DataFrame,
-                      spend_col: str = 'spend') -> pd.DataFrame:
-    """
-    將週轉換資料依日期範圍 assign 到每天的資料上。
-    同一平台同一週的進件數/完開數，按花費比例分配到各廣告活動。
-    回傳加總後的廣告活動層級表（含 jin, wan）。
-    """
-    if daily_df.empty or conv_platform.empty:
-        return pd.DataFrame()
-
-    result = daily_df.copy()
-    result['jin'] = 0.0
-    result['wan'] = 0.0
-    result['shidong'] = 0.0
-
-    # 對每個週，找落在該週的日期，按花費比例分配
-    for _, conv_row in conv_platform.iterrows():
-        s = conv_row['start_date']
-        e = conv_row['end_date']
-        mask = (result['date'] >= s) & (result['date'] <= e)
-        sub = result[mask]
-        if sub.empty:
-            continue
-        total_spend = sub[spend_col].sum()
-        if total_spend == 0:
-            continue
-        ratio = sub[spend_col] / total_spend
-        result.loc[mask, 'jin']     += ratio * float(conv_row['jin'] or 0)
-        result.loc[mask, 'wan']     += ratio * float(conv_row['wan'] or 0)
-        result.loc[mask, 'shidong'] += ratio * float(conv_row['shidong'] or 0)
-
-    return result
+    week = pd.DataFrame(records) if records else pd.DataFrame()
+    return pd.DataFrame(), week  # 舊格式沒有天維度
 
 
 # ── ASA ───────────────────────────────────────────────
-def _load_asa(df: pd.DataFrame, conv_df: pd.DataFrame) -> dict:
+def _load_asa(df: pd.DataFrame) -> dict:
     if df.empty:
         return {k: pd.DataFrame() for k in ['asa_daily', 'asa_camp', 'asa_kw', 'asa_raw']}
 
@@ -230,40 +349,21 @@ def _load_asa(df: pd.DataFrame, conv_df: pd.DataFrame) -> dict:
     df['clk']   = pd.to_numeric(df['點擊'], errors='coerce').fillna(0)
     df['dl']    = pd.to_numeric(df['下載數'], errors='coerce').fillna(0)
 
-    # 日層級（用於日期篩選）
     daily = df.groupby(['date_str', 'date']).agg(
         spend=('spend','sum'), imp=('imp','sum'), clk=('clk','sum'), dl=('dl','sum')
     ).reset_index()
 
-    # 廣告活動層級（不含轉換，轉換由週資料 join）
     camp = df.groupby('廣告活動').agg(
         spend=('spend','sum'), imp=('imp','sum'), clk=('clk','sum'), dl=('dl','sum')
     ).reset_index()
-
-    # 取 ASA 週轉換資料
-    asa_conv = _get_conv_for_platform(conv_df, 'ASA')
-    asa_conv_totals = _get_conv_totals(asa_conv)  # 全量 jin/wan
-
-    camp['jin'] = asa_conv_totals.get('jin', 0)
-    camp['wan'] = asa_conv_totals.get('wan', 0)
-    camp['shidong'] = asa_conv_totals.get('shidong', 0)
-
-    # 依花費比例分配到各廣告活動
-    total_spend = camp['spend'].sum()
-    if total_spend > 0 and (camp['jin'].sum() > 0 or camp['wan'].sum() > 0):
-        for idx, row in camp.iterrows():
-            ratio = row['spend'] / total_spend if total_spend > 0 else 0
-            camp.at[idx, 'jin'] = asa_conv_totals.get('jin', 0) * ratio
-            camp.at[idx, 'wan'] = asa_conv_totals.get('wan', 0) * ratio
-            camp.at[idx, 'shidong'] = asa_conv_totals.get('shidong', 0) * ratio
-
+    for col in ['jin','wan','shidong']:
+        camp[col] = 0.0
     camp['CTR%']   = camp.apply(lambda r: sdiv(r['clk'], r['imp'], 100), axis=1)
     camp['CPI']    = camp.apply(lambda r: sdiv(r['spend'], r['dl'], 1, 0), axis=1)
-    camp['CPL']    = camp.apply(lambda r: sdiv(r['spend'], r['jin'], 1, 0), axis=1)
-    camp['進件率%'] = camp.apply(lambda r: sdiv(r['jin'], r['dl'], 100), axis=1)
-    camp['完開率%'] = camp.apply(lambda r: sdiv(r['wan'], r['jin'], 100), axis=1)
+    camp['CPL']    = 0.0
+    camp['進件率%'] = 0.0
+    camp['完開率%'] = 0.0
 
-    # 關鍵字層級（純流量）
     kw = df.groupby(['廣告活動','廣告群組','廣告關鍵字']).agg(
         spend=('spend','sum'), imp=('imp','sum'), clk=('clk','sum'), dl=('dl','sum')
     ).reset_index()
@@ -275,7 +375,7 @@ def _load_asa(df: pd.DataFrame, conv_df: pd.DataFrame) -> dict:
 
 
 # ── Google KW ─────────────────────────────────────────
-def _load_kw(df: pd.DataFrame, conv_df: pd.DataFrame) -> dict:
+def _load_kw(df: pd.DataFrame) -> dict:
     if df.empty:
         return {k: pd.DataFrame() for k in ['kw_daily', 'kw_camp', 'kw_kw', 'kw_raw']}
 
@@ -295,28 +395,13 @@ def _load_kw(df: pd.DataFrame, conv_df: pd.DataFrame) -> dict:
     camp = df.groupby(['廣告活動','camp_short']).agg(
         spend=('spend','sum'), imp=('imp','sum'), clk=('clk','sum')
     ).reset_index()
-
-    # Google KW → Google廣告 / 品牌字 等
-    google_conv = _get_conv_for_platform(conv_df, 'Google')
-    google_totals = _get_conv_totals(google_conv)
-
-    # 依 camp_short 名稱精確對應（如 '品牌字' 對應 conv 的 '品牌字'）
-    # 若找不到精確對應，按花費比例分配
-    camp['jin'] = 0.0; camp['wan'] = 0.0; camp['shidong'] = 0.0
-    for _, conv_row in google_conv.iterrows():
-        camp_name = conv_row.get('campaign', '')
-        exact = camp[camp['camp_short'] == camp_name]
-        if not exact.empty:
-            for idx in exact.index:
-                camp.at[idx, 'jin'] += float(conv_row.get('jin', 0) or 0)
-                camp.at[idx, 'wan'] += float(conv_row.get('wan', 0) or 0)
-                camp.at[idx, 'shidong'] += float(conv_row.get('shidong', 0) or 0)
-
+    for col in ['jin','wan','shidong']:
+        camp[col] = 0.0
     camp['CTR%']   = camp.apply(lambda r: sdiv(r['clk'], r['imp'], 100), axis=1)
     camp['CPC']    = camp.apply(lambda r: sdiv(r['spend'], r['clk'], 1, 1), axis=1)
-    camp['CPL']    = camp.apply(lambda r: sdiv(r['spend'], r['jin'], 1, 0), axis=1)
-    camp['進件率%'] = camp.apply(lambda r: sdiv(r['jin'], r['clk'], 100), axis=1)
-    camp['完開率%'] = camp.apply(lambda r: sdiv(r['wan'], r['jin'], 100), axis=1)
+    camp['CPL']    = 0.0
+    camp['進件率%'] = 0.0
+    camp['完開率%'] = 0.0
 
     kw = df.groupby(['camp_short','廣告關鍵字']).agg(
         spend=('spend','sum'), imp=('imp','sum'), clk=('clk','sum')
@@ -329,7 +414,7 @@ def _load_kw(df: pd.DataFrame, conv_df: pd.DataFrame) -> dict:
 
 
 # ── Google PMax ───────────────────────────────────────
-def _load_pmax(df: pd.DataFrame, conv_df: pd.DataFrame) -> dict:
+def _load_pmax(df: pd.DataFrame) -> dict:
     if df.empty:
         return {k: pd.DataFrame() for k in ['pm_daily', 'pm_camp', 'pm_raw']}
 
@@ -348,31 +433,14 @@ def _load_pmax(df: pd.DataFrame, conv_df: pd.DataFrame) -> dict:
     camp = df.groupby('廣告活動').agg(
         spend=('spend','sum'), imp=('imp','sum'), clk=('clk','sum')
     ).reset_index()
-
-    pmax_conv = _get_conv_for_platform(conv_df, 'Pmax')
-    pmax_totals = _get_conv_totals(pmax_conv)
-
-    camp['jin'] = pmax_totals.get('jin', 0)
-    camp['wan'] = pmax_totals.get('wan', 0)
-    camp['shidong'] = pmax_totals.get('shidong', 0)
-
+    for col in ['jin','wan','shidong']:
+        camp[col] = 0.0
     camp['CTR%']  = camp.apply(lambda r: sdiv(r['clk'], r['imp'], 100), axis=1)
     camp['CPC']   = camp.apply(lambda r: sdiv(r['spend'], r['clk'], 1, 1), axis=1)
-    camp['CPL']   = camp.apply(lambda r: sdiv(r['spend'], r['jin'], 1, 0), axis=1)
-    camp['完開率%'] = camp.apply(lambda r: sdiv(r['wan'], r['jin'], 100), axis=1)
+    camp['CPL']   = 0.0
+    camp['完開率%'] = 0.0
 
     return {'pm_daily': daily, 'pm_camp': camp, 'pm_raw': df}
-
-
-def _get_conv_totals(conv_df: pd.DataFrame) -> dict:
-    """合計特定平台所有週的轉換數值"""
-    if conv_df.empty:
-        return {'jin': 0, 'wan': 0, 'shidong': 0}
-    return {
-        'jin':     conv_df['jin'].sum(),
-        'wan':     conv_df['wan'].sum(),
-        'shidong': conv_df['shidong'].sum(),
-    }
 
 
 # ── 時間 meta ─────────────────────────────────────────
@@ -391,6 +459,107 @@ def _build_meta(out: dict) -> dict:
         'generated': datetime.now().strftime('%Y-%m-%d %H:%M'),
         'all_dates': all_dates,
     }
+
+
+# ── 週報表組合（PMax 合計行 + 子行）────────────────────
+def build_conv_report(conv_week: pd.DataFrame, by: str = 'week') -> pd.DataFrame:
+    """
+    將 conv_week 整理成週報表格式：
+    - PMax 新增「合計行」（曝光/點擊/花費加總，進件/開戶/開戶率加總）
+    - PMax 各子廣告保留進件/開戶/開戶率，曝光/點擊/花費顯示空白
+    - 其他廣告照原樣
+
+    排序：PMax合計 → PMax子行 → KW各行 → ASA各行
+    """
+    if conv_week.empty:
+        return pd.DataFrame()
+
+    pmax_mask = conv_week['廣告'].str.startswith('Google PMAX', na=False)
+    pmax_rows = conv_week[pmax_mask].copy()
+    non_pmax  = conv_week[~pmax_mask].copy()
+
+    grp_col = by  # 'week'
+    results = []
+
+    # PMax 合計行
+    if not pmax_rows.empty:
+        agg = pmax_rows.groupby(grp_col).agg(
+            imp=('imp','sum'), clk=('clk','sum'), spend=('spend','sum'),
+            進件數=('進件數','sum'), 開戶數=('開戶數','sum')
+        ).reset_index()
+        agg['廣告']   = 'Google PMax（合計）'
+        agg['平台']   = '01-Google廣告'
+        agg['開戶率%'] = agg.apply(lambda r: sdiv(r['開戶數'], r['進件數'], 100, 1), axis=1)
+        agg['進件成本'] = agg.apply(lambda r: sdiv(r['spend'], r['進件數'], 1, 0), axis=1)
+        agg['開戶成本'] = agg.apply(lambda r: sdiv(r['spend'], r['開戶數'], 1, 0), axis=1)
+        agg['_sort'] = 0
+        results.append(agg)
+
+        # PMax 子行（曝光/點擊/花費空白，但進件成本/開戶成本用合計花費按進件比例分配）
+        sub = pmax_rows.copy()
+        sub['imp']   = None
+        sub['clk']   = None
+        sub['spend'] = None
+        # 取各週 PMax 合計花費
+        week_spend = agg.set_index(grp_col)['spend'].to_dict()
+        def _cost(row, metric):
+            total_spend = week_spend.get(row[grp_col], 0)
+            val = row.get(metric, 0) or 0
+            return sdiv(total_spend, val, 1, 0) if val > 0 else None
+        sub['進件成本'] = sub.apply(lambda r: _cost(r, '進件數'), axis=1)
+        sub['開戶成本'] = sub.apply(lambda r: _cost(r, '開戶數'), axis=1)
+        sub['_sort'] = 1
+        results.append(sub)
+
+    # 非 PMax 行
+    if not non_pmax.empty:
+        non_pmax['_sort'] = 2
+        results.append(non_pmax)
+
+    df = pd.concat(results, ignore_index=True)
+    df = df.sort_values([grp_col, '_sort', '廣告']).drop(columns=['_sort'])
+    return df
+
+
+def build_conv_report_day(conv_day: pd.DataFrame) -> pd.DataFrame:
+    """天維度的同樣邏輯"""
+    if conv_day.empty:
+        return pd.DataFrame()
+
+    pmax_mask = conv_day['廣告'].str.startswith('Google PMAX', na=False)
+    pmax_rows = conv_day[pmax_mask].copy()
+    non_pmax  = conv_day[~pmax_mask].copy()
+
+    results = []
+    if not pmax_rows.empty:
+        agg = pmax_rows.groupby('date_str').agg(
+            imp=('imp','sum'), clk=('clk','sum'), spend=('spend','sum'),
+            進件數=('進件數','sum'), 開戶數=('開戶數','sum')
+        ).reset_index()
+        agg['廣告']   = 'Google PMax（合計）'
+        agg['平台']   = '01-Google廣告'
+        agg['開戶率%'] = agg.apply(lambda r: sdiv(r['開戶數'], r['進件數'], 100, 1), axis=1)
+        agg['進件成本'] = agg.apply(lambda r: sdiv(r['spend'], r['進件數'], 1, 0), axis=1)
+        agg['開戶成本'] = agg.apply(lambda r: sdiv(r['spend'], r['開戶數'], 1, 0), axis=1)
+        agg['_sort'] = 0
+        results.append(agg)
+
+        sub = pmax_rows.copy()
+        sub['imp'] = None; sub['clk'] = None; sub['spend'] = None
+        # 天維度的 PMax 合計花費
+        day_spend = agg.set_index('date_str')['spend'].to_dict()
+        sub['進件成本'] = sub.apply(lambda r: sdiv(day_spend.get(r['date_str'], 0), r['進件數'], 1, 0) if (r.get('進件數') or 0) > 0 else None, axis=1)
+        sub['開戶成本'] = sub.apply(lambda r: sdiv(day_spend.get(r['date_str'], 0), r['開戶數'], 1, 0) if (r.get('開戶數') or 0) > 0 else None, axis=1)
+        sub['_sort'] = 1
+        results.append(sub)
+
+    if not non_pmax.empty:
+        non_pmax['_sort'] = 2
+        results.append(non_pmax)
+
+    df = pd.concat(results, ignore_index=True)
+    df = df.sort_values(['date_str', '_sort', '廣告']).drop(columns=['_sort'])
+    return df
 
 
 # ── 日期範圍篩選 ──────────────────────────────────────
