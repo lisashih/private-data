@@ -12,7 +12,8 @@ from datetime import date, timedelta
 
 from data_processor import (
     load_data, filter_dates,
-    sdiv, fmt_money, fmt_num, wow_pct, shorten_camp
+    sdiv, fmt_money, fmt_num, wow_pct, shorten_camp,
+    build_conv_report, build_conv_report_day
 )
 
 # ══════════════════════════════════════════════════════
@@ -172,16 +173,35 @@ with st.sidebar:
         st.caption("快速選取：")
         qcols = st.columns(3)
         if qcols[0].button("本月", use_container_width=True):
-            st.session_state['_qs'] = max_d.replace(day=1)
+            ms = max_d.replace(day=1)
+            st.session_state['_qs'] = ms
             st.session_state['_qe'] = max_d
+            # 對比上個月同期
+            import calendar
+            prev_month = ms.replace(day=1) - timedelta(days=1)
+            prev_ms = prev_month.replace(day=1)
+            prev_me = min(prev_month, prev_ms.replace(day=ms.day - 1) if ms.day > 1 else prev_month)
+            st.session_state['_cs'] = max(min_d, prev_ms)
+            st.session_state['_ce'] = max(min_d, prev_me)
+            st.session_state['_use_cmp'] = True
             st.rerun()
         if qcols[1].button("近7天", use_container_width=True):
-            st.session_state['_qs'] = max(min_d, max_d - timedelta(days=6))
+            qs = max(min_d, max_d - timedelta(days=6))
+            st.session_state['_qs'] = qs
             st.session_state['_qe'] = max_d
+            # 對比前7天
+            st.session_state['_cs'] = max(min_d, qs - timedelta(days=7))
+            st.session_state['_ce'] = max(min_d, qs - timedelta(days=1))
+            st.session_state['_use_cmp'] = True
             st.rerun()
         if qcols[2].button("近14天", use_container_width=True):
-            st.session_state['_qs'] = max(min_d, max_d - timedelta(days=13))
+            qs = max(min_d, max_d - timedelta(days=13))
+            st.session_state['_qs'] = qs
             st.session_state['_qe'] = max_d
+            # 對比前14天
+            st.session_state['_cs'] = max(min_d, qs - timedelta(days=14))
+            st.session_state['_ce'] = max(min_d, qs - timedelta(days=1))
+            st.session_state['_use_cmp'] = True
             st.rerun()
 
         # 初始預設值：從 quick-select state 取，否則用資料範圍
@@ -203,24 +223,48 @@ with st.sidebar:
 
         st.markdown("---")
         st.markdown("**📊 對比期間**")
-        use_cmp = st.checkbox("啟用對比", value=False)
+        _use_cmp_def = st.session_state.get('_use_cmp', False)
+        use_cmp = st.checkbox("啟用對比", value=_use_cmp_def)
         cmp_start = cmp_end = None
         if use_cmp:
+            _def_cs = st.session_state.get('_cs', min_d)
+            _def_ce = st.session_state.get('_ce', min_d + timedelta(days=(sel_end - sel_start).days))
+            _def_cs = max(min_d, min(_def_cs, max_d))
+            _def_ce = max(min_d, min(_def_ce, max_d))
             cmp_col1, cmp_col2 = st.columns(2)
             with cmp_col1:
-                cmp_start = st.date_input("對比開始", value=min_d, min_value=min_d, max_value=max_d, key='cmp_s')
+                cmp_start = st.date_input("對比開始", value=_def_cs, min_value=min_d, max_value=max_d, key='cmp_s')
             with cmp_col2:
-                cmp_end = st.date_input("對比結束", value=min_d + timedelta(days=(sel_end - sel_start).days), min_value=min_d, max_value=max_d, key='cmp_e')
+                cmp_end = st.date_input("對比結束", value=_def_ce, min_value=min_d, max_value=max_d, key='cmp_e')
 
         st.markdown("---")
-        st.markdown("**💰 預算進度（本月，NT$）**")
-        BUDGET = {'品牌字': 350000, '廣字': 235000, '投資入門': 15000,
-                  'PMAX': 300000, 'ASA 台股字': 300000, 'ASA 美股字': 50000}
+        st.markdown("**💰 預算設定（本月，NT$）**")
+
+        # 預設預算
+        BUDGET_DEFAULT = {'品牌字': 350000, '廣字': 235000, '投資入門': 15000,
+                          'PMAX': 300000, 'ASA 台股字': 300000, 'ASA 美股字': 50000}
+
+        # 從 session_state 讀取已儲存的預算，第一次用預設值
+        if 'budget_plan' not in st.session_state:
+            st.session_state['budget_plan'] = dict(BUDGET_DEFAULT)
+
+        BUDGET = {}
         budget_actual = {}
-        for k, bud in BUDGET.items():
-            budget_actual[k] = st.number_input(
-                f"{k}（{bud//1000}K）", min_value=0, max_value=bud*2, value=0, step=5000, key=f'b_{k}'
-            )
+        for k, default_bud in BUDGET_DEFAULT.items():
+            col_bud, col_act = st.columns(2)
+            with col_bud:
+                new_bud = st.number_input(
+                    f"{k} 預算", min_value=0, max_value=2000000,
+                    value=st.session_state['budget_plan'].get(k, default_bud),
+                    step=5000, key=f'plan_{k}'
+                )
+                BUDGET[k] = new_bud
+                st.session_state['budget_plan'][k] = new_bud
+            with col_act:
+                budget_actual[k] = st.number_input(
+                    f"{k} 實際", min_value=0, max_value=2000000,
+                    value=0, step=5000, key=f'b_{k}'
+                )
 
         st.markdown("---")
         st.caption(f"資料區間：{meta['min_date']} ~ {meta['max_date']}\n產生時間：{meta['generated']}")
@@ -274,6 +318,8 @@ pm_daily_all  = data.get('pm_daily',  pd.DataFrame())
 pm_camp_all   = data.get('pm_camp',   pd.DataFrame())
 pm_raw_all    = data.get('pm_raw',    pd.DataFrame())
 conv_raw      = data.get('conv_raw',  pd.DataFrame())
+conv_day      = data.get('conv_day',  pd.DataFrame())
+conv_week     = data.get('conv_week', pd.DataFrame())
 
 # ── 篩選選取期 ────────────────────────────────────────
 asa_d  = filter_dates(asa_daily_all, 'date_str', S, E)
@@ -835,67 +881,119 @@ with t_conv:
             st.caption("填入轉換資料後漏斗圖將自動更新")
 
 # ════════════════════════════════════════════════════
-# 週報表（進件數完開數週資料）
+# 週報表（進件/開戶 天+週 維度）
 # ════════════════════════════════════════════════════
 with t_weekly:
-    sec("📅 週報表 — 進件數 / 完開數 / 實動數")
-    conv = data.get('conv_raw', pd.DataFrame())
+    sec("📅 週報表 — 進件數 / 開戶數")
 
-    if conv.empty:
-        st.info("💡 尚無週轉換資料。請在「進件數完開數」分頁填入後重新上傳。\n\n格式：Week, 平台, 廣告活動, 花費, 進件數, 進件成本, 完開數, 完開成本, 完開率, 實動, 實動率")
+    if conv_week.empty and conv_day.empty:
+        st.info("💡 尚無進件資料。請確認 xlsx 包含「工作表1」分頁（含 date, week, 平台, 廣告, 開戶狀態, 人數 欄位）。")
     else:
-        # 週次選擇
-        weeks = sorted(conv['week_str'].unique())
-        sel_week = st.selectbox("選擇週次", options=["全部"] + list(weeks), index=0)
-        df_w = conv if sel_week == "全部" else conv[conv['week_str'] == sel_week]
+        view_mode = st.radio("檢視維度", ["週", "天"], horizontal=True)
 
-        # 彙總 KPI
-        total_jin = df_w['jin'].sum()
-        total_wan = df_w['wan'].sum()
-        total_sd  = df_w['shidong'].sum()
-        total_spend = df_w['spend'].sum()
+        if view_mode == "週":
+            df_view = conv_week.copy() if not conv_week.empty else pd.DataFrame()
+            if not df_view.empty:
+                weeks = sorted(df_view['week'].unique())
+                sel_week = st.selectbox("選擇週次", ["全部"] + list(weeks), index=0)
+                df_w = df_view if sel_week == "全部" else df_view[df_view['week'] == sel_week]
 
-        sec(f"彙總 — {sel_week}")
-        kpi_row([
-            ("進件數",  fmt_num(total_jin), None),
-            ("完開數",  fmt_num(total_wan), None),
-            ("實動數",  fmt_num(total_sd),  None),
-            ("整體完開率", f"{sdiv(total_wan, total_jin, 100):.1f}%", None),
-            ("整體實動率", f"{sdiv(total_sd,  total_wan, 100):.1f}%", None),
-        ])
+                # KPI 彙總
+                total_jin   = df_w['進件數'].sum()
+                total_wan   = df_w['開戶數'].sum()
+                total_spend = df_w['spend'].sum()
+                sec(f"彙總 — {sel_week}")
+                kpi_row([
+                    ("進件數",   fmt_num(total_jin),        None),
+                    ("開戶數",   fmt_num(total_wan),        None),
+                    ("開戶率",   f"{sdiv(total_wan, total_jin, 100):.1f}%", None),
+                    ("花費",     fmt_money(total_spend),    None, True),
+                    ("開戶成本", fmt_money(sdiv(total_spend, total_wan, 1, 0)), None, True),
+                ])
 
-        st.markdown("---")
-        sec("各平台明細")
-        disp = df_w[['week_str','platform','campaign','jin','wan','shidong',
-                     'jin_cost','wan_cost','wan_rate']].copy()
-        disp.columns = ['週次','平台','廣告活動','進件數','完開數','實動數',
-                        '進件成本','完開成本','完開率']
-        disp['進件成本'] = disp['進件成本'].apply(lambda x: f"NT${x:,.0f}" if x > 0 else "–")
-        disp['完開成本'] = disp['完開成本'].apply(lambda x: f"NT${x:,.0f}" if x > 0 else "–")
-        disp['完開率']   = disp['完開率'].apply(lambda x: f"{x*100:.1f}%" if x > 0 else "–")
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+                st.markdown("---")
+                # 週明細表（PMax 合計行 + 子行）
+                rpt = build_conv_report(df_w)
+                disp_cols = ['week', '廣告', 'imp', 'clk', 'spend', '進件數', '開戶數', '進件成本', '開戶成本', '開戶率%']
+                disp_cols = [c for c in disp_cols if c in rpt.columns]
+                disp = rpt[disp_cols].copy()
+                disp.rename(columns={'week': '週次', 'imp': '曝光', 'clk': '點擊', 'spend': '花費'}, inplace=True)
+                def _fmt_cell(x, is_money=False):
+                    if x is None or (isinstance(x, float) and pd.isna(x)): return ''
+                    if is_money: return f"NT${x:,.0f}" if x > 0 else '–'
+                    return x
+                for col in ['曝光', '點擊']:
+                    if col in disp.columns:
+                        disp[col] = disp[col].apply(lambda x: '' if x is None or (isinstance(x, float) and pd.isna(x)) else f"{int(x):,}")
+                if '花費' in disp.columns:
+                    disp['花費'] = disp['花費'].apply(lambda x: '' if x is None or (isinstance(x, float) and pd.isna(x)) else f"NT${x:,.0f}")
+                for cost_col in ['進件成本', '開戶成本']:
+                    if cost_col in disp.columns:
+                        disp[cost_col] = disp[cost_col].apply(lambda x: '' if x is None or (isinstance(x, float) and pd.isna(x)) else (f"NT${x:,.0f}" if x > 0 else '–'))
+                if '開戶率%' in disp.columns:
+                    disp['開戶率%'] = disp['開戶率%'].apply(lambda x: '' if x is None or (isinstance(x, float) and pd.isna(x)) else f"{x:.1f}%")
+                st.dataframe(disp, use_container_width=True, hide_index=True)
 
-        st.markdown("---")
-        # 各平台進件/完開橫向比較
-        if not df_w.empty:
-            sec("各平台進件數 vs 完開數")
-            agg = df_w.groupby('platform').agg(jin=('jin','sum'), wan=('wan','sum'), sd=('shidong','sum')).reset_index()
-            fig = go.Figure()
-            fig.add_trace(go.Bar(name='進件數', x=agg['platform'], y=agg['jin'], marker_color='#2563EB'))
-            fig.add_trace(go.Bar(name='完開數', x=agg['platform'], y=agg['wan'], marker_color='#16A34A'))
-            fig.add_trace(go.Bar(name='實動數', x=agg['platform'], y=agg['sd'],  marker_color='#D97706'))
-            fig.update_layout(barmode='group', height=280, margin=dict(t=10,b=20),
-                               legend=dict(orientation='h',y=1.1))
-            st.plotly_chart(fig, use_container_width=True)
+                # 各廣告進件/開戶橫向比較
+                st.markdown("---")
+                sec("各廣告進件數 vs 開戶數")
+                agg = df_w.groupby('廣告').agg(進件數=('進件數','sum'), 開戶數=('開戶數','sum')).reset_index()
+                agg = agg.sort_values('進件數', ascending=False)
+                fig = go.Figure()
+                fig.add_trace(go.Bar(name='進件數', x=agg['廣告'], y=agg['進件數'], marker_color='#2563EB'))
+                fig.add_trace(go.Bar(name='開戶數', x=agg['廣告'], y=agg['開戶數'], marker_color='#16A34A'))
+                fig.update_layout(barmode='group', height=320, margin=dict(t=10,b=100),
+                                   legend=dict(orientation='h',y=1.05),
+                                   xaxis_tickangle=-30)
+                st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("---")
-    st.caption("""
-**「進件數完開數」分頁填寫格式：**
-| 欄位 | 說明 |
-|------|------|
-| Week | 週次，格式 Week15_0406~0412 |
-| 平台 | Google廣告 / ASA廣告 / Pmax廣告 |
-| 廣告活動 | 品牌字 / ASA廣告 / Pmax廣告 等 |
-| 進件數 / 完開數 / 實動 | 填入數字即可 |
-| 進件成本 / 完開成本 | 選填 |
-""")
+        else:  # 天維度
+            df_view = conv_day.copy() if not conv_day.empty else pd.DataFrame()
+            if not df_view.empty:
+                # 依選取期間篩選
+                df_d = filter_dates(df_view, 'date_str', S, E)
+                if df_d.empty:
+                    st.info("選取期間內無天維度資料")
+                else:
+                    total_jin   = df_d['進件數'].sum()
+                    total_wan   = df_d['開戶數'].sum()
+                    total_spend = df_d['spend'].sum()
+                    sec(f"彙總 — {S} ~ {E}")
+                    kpi_row([
+                        ("進件數",   fmt_num(total_jin),        None),
+                        ("開戶數",   fmt_num(total_wan),        None),
+                        ("開戶率",   f"{sdiv(total_wan, total_jin, 100):.1f}%", None),
+                        ("花費",     fmt_money(total_spend),    None, True),
+                        ("開戶成本", fmt_money(sdiv(total_spend, total_wan, 1, 0)), None, True),
+                    ])
+
+                    st.markdown("---")
+                    # 天明細表（PMax 合計行 + 子行）
+                    rpt_d = build_conv_report_day(df_d)
+                    disp_cols = ['date_str', '廣告', 'imp', 'clk', 'spend', '進件數', '開戶數', '進件成本', '開戶成本', '開戶率%']
+                    disp_cols = [c for c in disp_cols if c in rpt_d.columns]
+                    disp = rpt_d[disp_cols].copy()
+                    disp.rename(columns={'date_str': '日期', 'imp': '曝光', 'clk': '點擊', 'spend': '花費'}, inplace=True)
+                    for col in ['曝光', '點擊']:
+                        if col in disp.columns:
+                            disp[col] = disp[col].apply(lambda x: '' if x is None or (isinstance(x, float) and pd.isna(x)) else f"{int(x):,}")
+                    if '花費' in disp.columns:
+                        disp['花費'] = disp['花費'].apply(lambda x: '' if x is None or (isinstance(x, float) and pd.isna(x)) else f"NT${x:,.0f}")
+                    for cost_col in ['進件成本', '開戶成本']:
+                        if cost_col in disp.columns:
+                            disp[cost_col] = disp[cost_col].apply(lambda x: '' if x is None or (isinstance(x, float) and pd.isna(x)) else (f"NT${x:,.0f}" if x > 0 else '–'))
+                    if '開戶率%' in disp.columns:
+                        disp['開戶率%'] = disp['開戶率%'].apply(lambda x: '' if x is None or (isinstance(x, float) and pd.isna(x)) else f"{x:.1f}%")
+                    st.dataframe(disp, use_container_width=True, hide_index=True)
+
+                    # 每日進件/開戶趨勢
+                    st.markdown("---")
+                    sec("每日進件數 / 開戶數趨勢")
+                    trend = df_d.groupby('date_str').agg(進件數=('進件數','sum'), 開戶數=('開戶數','sum')).reset_index()
+                    fig = go.Figure()
+                    fig.add_trace(go.Bar(name='進件數', x=trend['date_str'], y=trend['進件數'], marker_color='#2563EB'))
+                    fig.add_trace(go.Scatter(name='開戶數', x=trend['date_str'], y=trend['開戶數'],
+                                            mode='lines+markers', line=dict(color='#16A34A', width=2)))
+                    fig.update_layout(height=280, margin=dict(t=10,b=30),
+                                       legend=dict(orientation='h',y=1.08))
+                    st.plotly_chart(fig, use_container_width=True)
