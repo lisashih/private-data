@@ -817,12 +817,12 @@ with t_conv:
     st.subheader(f"🔄 轉換分析　{S} – {E}")
     st.markdown('<div class="note-box">⚠️ 轉換指標只在廣告活動層級有效。請在「進件數完開數」分頁填入資料後重新上傳。</div>', unsafe_allow_html=True)
 
-    if not conv_raw.empty and conv_raw['jin'].sum() > 0:
-        st.markdown("#### 轉換資料（全量）")
-        st.dataframe(conv_raw[['week_str','platform','campaign','jin','wan']].head(30),
-                     use_container_width=True, hide_index=True)
+    if not conv_week.empty and conv_week['進件數'].sum() > 0:
+        st.markdown("#### 進件資料（全量）")
+        show_cols = [c for c in ['week','平台','廣告','進件數','開戶數','開戶率%'] if c in conv_week.columns]
+        st.dataframe(conv_week[show_cols].head(30), use_container_width=True, hide_index=True)
     else:
-        st.info("「進件數完開數」分頁目前沒有有效資料。填入後重新上傳，系統將自動 join 到各廣告活動。")
+        st.info("「工作表1」分頁目前沒有有效資料。填入後重新上傳。")
 
     st.markdown("---")
     st.markdown("#### CPL 比較（廣告活動層級，選取期間）")
