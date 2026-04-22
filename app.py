@@ -163,39 +163,31 @@ with st.sidebar:
 
         st.markdown("---")
         st.markdown("**📅 選取期間**")
-
-        # 快速選擇按鈕（先於 date_input，設 internal state）
-        st.caption("快速選取：")
-        qcols = st.columns(3)
-        if qcols[0].button("本月", use_container_width=True):
-            st.session_state['_qs'] = max_d.replace(day=1)
-            st.session_state['_qe'] = max_d
-            st.rerun()
-        if qcols[1].button("近7天", use_container_width=True):
-            st.session_state['_qs'] = max(min_d, max_d - timedelta(days=6))
-            st.session_state['_qe'] = max_d
-            st.rerun()
-        if qcols[2].button("近14天", use_container_width=True):
-            st.session_state['_qs'] = max(min_d, max_d - timedelta(days=13))
-            st.session_state['_qe'] = max_d
-            st.rerun()
-
-        # 初始預設值：從 quick-select state 取，否則用資料範圍
-        _def_s = st.session_state.get('_qs', min_d)
-        _def_e = st.session_state.get('_qe', max_d)
-        # 確保在資料範圍內
-        _def_s = max(min_d, min(_def_s, max_d))
-        _def_e = max(min_d, min(_def_e, max_d))
-
         col_s, col_e = st.columns(2)
         with col_s:
-            sel_start = st.date_input("開始", value=_def_s, min_value=min_d, max_value=max_d)
+            sel_start = st.date_input("開始", value=min_d, min_value=min_d, max_value=max_d, key='sel_s')
         with col_e:
-            sel_end = st.date_input("結束", value=_def_e, min_value=min_d, max_value=max_d)
+            sel_end = st.date_input("結束", value=max_d, min_value=min_d, max_value=max_d, key='sel_e')
 
         if sel_start > sel_end:
             st.error("開始日期不能晚於結束日期")
             st.stop()
+
+        # 快速選擇按鈕
+        st.caption("快速選取：")
+        qcols = st.columns(3)
+        if qcols[0].button("本月", use_container_width=True):
+            st.session_state['sel_s'] = max_d.replace(day=1)
+            st.session_state['sel_e'] = max_d
+            st.rerun()
+        if qcols[1].button("近7天", use_container_width=True):
+            st.session_state['sel_s'] = max(min_d, max_d - timedelta(days=6))
+            st.session_state['sel_e'] = max_d
+            st.rerun()
+        if qcols[2].button("近14天", use_container_width=True):
+            st.session_state['sel_s'] = max(min_d, max_d - timedelta(days=13))
+            st.session_state['sel_e'] = max_d
+            st.rerun()
 
         st.markdown("---")
         st.markdown("**📊 對比期間**")
@@ -777,7 +769,7 @@ with t_conv:
     st.markdown("---")
     st.markdown("#### 轉換漏斗（選取期間，全平台合計）")
     all_camp = pd.concat([
-        asa_c[['clk','dl','jin','wan']].rename(columns={'dl':'mid'}) if (not asa_c.empty and 'dl' in asa_c.columns) else (asa_c[['clk','jin','wan']].assign(mid=0) if not asa_c.empty else pd.DataFrame()),
+        asa_c[['clk','dl','jin','wan']].rename(columns={'dl':'mid'}) if not asa_c.empty else pd.DataFrame(),
         kw_c[['clk','jin','wan']].assign(mid=0) if not kw_c.empty else pd.DataFrame(),
         pm_c[['clk','jin','wan']].assign(mid=0) if not pm_c.empty else pd.DataFrame(),
     ], ignore_index=True)
