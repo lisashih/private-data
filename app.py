@@ -163,23 +163,8 @@ with st.sidebar:
 
         st.markdown("---")
         st.markdown("**📅 選取期間**")
-        # 快速選取預設值
-        _def_s = st.session_state.get('_qs', min_d)
-        _def_e = st.session_state.get('_qe', max_d)
-        _def_s = max(min_d, min(_def_s, max_d))
-        _def_e = max(min_d, min(_def_e, max_d))
 
-        col_s, col_e = st.columns(2)
-        with col_s:
-            sel_start = st.date_input("開始", value=_def_s, min_value=_def_s, max_value=max_d)
-        with col_e:
-            sel_end = st.date_input("結束", value=_def_e, min_value=min_d, max_value=max_d)
-
-        if sel_start > sel_end:
-            st.error("開始日期不能晚於結束日期")
-            st.stop()
-
-        # 快速選擇按鈕
+        # 快速選擇按鈕（先於 date_input，設 internal state）
         st.caption("快速選取：")
         qcols = st.columns(3)
         if qcols[0].button("本月", use_container_width=True):
@@ -194,6 +179,23 @@ with st.sidebar:
             st.session_state['_qs'] = max(min_d, max_d - timedelta(days=13))
             st.session_state['_qe'] = max_d
             st.rerun()
+
+        # 初始預設值：從 quick-select state 取，否則用資料範圍
+        _def_s = st.session_state.get('_qs', min_d)
+        _def_e = st.session_state.get('_qe', max_d)
+        # 確保在資料範圍內
+        _def_s = max(min_d, min(_def_s, max_d))
+        _def_e = max(min_d, min(_def_e, max_d))
+
+        col_s, col_e = st.columns(2)
+        with col_s:
+            sel_start = st.date_input("開始", value=_def_s, min_value=min_d, max_value=max_d)
+        with col_e:
+            sel_end = st.date_input("結束", value=_def_e, min_value=min_d, max_value=max_d)
+
+        if sel_start > sel_end:
+            st.error("開始日期不能晚於結束日期")
+            st.stop()
 
         st.markdown("---")
         st.markdown("**📊 對比期間**")
@@ -274,53 +276,81 @@ asa_d  = filter_dates(asa_daily_all, 'date_str', S, E)
 kw_d   = filter_dates(kw_daily_all,  'date_str', S, E)
 pm_d   = filter_dates(pm_daily_all,  'date_str', S, E)
 
-# 廣告活動層級從 raw 重新彙總（確保日期篩選準確）
+# 廣告活動層級：從篩選後的 raw 重新聚合，jin/wan 從 data_processor 的 camp 結果合併
 asa_raw_f = filter_dates(asa_raw_all, 'date_str', S, E)
 kw_raw_f  = filter_dates(kw_raw_all,  'date_str', S, E)
 pm_raw_f  = filter_dates(pm_raw_all,  'date_str', S, E)
 
-def reagg_asa(raw_f):
+def _reagg(raw_f, group_cols, extra_cols=None):
     if raw_f.empty: return pd.DataFrame()
-    c = raw_f.groupby('廣告活動').agg(spend=('spend','sum'), imp=('imp','sum'), clk=('clk','sum'), dl=('dl','sum')).reset_index()
-    c['CTR%'] = c.apply(lambda r: sdiv(r['clk'], r['imp'], 100), axis=1)
-    c['CPI']  = c.apply(lambda r: sdiv(r['spend'], r['dl'], 1, 0), axis=1)
-    return c
+    agg = {'spend': ('spend','sum'), 'imp': ('imp','sum'), 'clk': ('clk','sum')}
+    if extra_cols:
+        for c in extra_cols:
+            if c in raw_f.columns:
+                agg[c] = (c, 'sum')
+    return raw_f.groupby(group_cols).agg(**agg).reset_index()
 
-def reagg_kw_camp(raw_f):
-    if raw_f.empty: return pd.DataFrame()
-    c = raw_f.groupby(['廣告活動','camp_short']).agg(spend=('spend','sum'), imp=('imp','sum'), clk=('clk','sum')).reset_index()
-    c['CTR%'] = c.apply(lambda r: sdiv(r['clk'], r['imp'], 100), axis=1)
-    c['CPC']  = c.apply(lambda r: sdiv(r['spend'], r['clk'], 1, 1), axis=1)
-    return c
+# ASA camp：從 raw 聚合花費/曝光/點擊/下載，再從全期 asa_camp_all 合併 jin/wan
+_asa_base = _reagg(asa_raw_f, ['廣告活動'], ['dl'])
+if not _asa_base.empty:
+    _asa_base['CTR%'] = _asa_base.apply(lambda r: sdiv(r['clk'], r['imp'], 100), axis=1)
+    _asa_base['CPI']  = _asa_base.apply(lambda r: sdiv(r['spend'], r['dl'], 1, 0), axis=1)
+    if not asa_camp_all.empty and 'jin' in asa_camp_all.columns:
+        _cols = [c for c in ['廣告活動','jin','wan','shidong'] if c in asa_camp_all.columns]
+        _asa_base = _asa_base.merge(asa_camp_all[_cols], on='廣告活動', how='left')
+    for col in ['jin','wan','shidong']:
+        if col not in _asa_base.columns: _asa_base[col] = 0
+    _asa_base[['jin','wan','shidong']] = _asa_base[['jin','wan','shidong']].fillna(0)
+    _asa_base['CPL'] = _asa_base.apply(lambda r: sdiv(r['spend'], r['jin'], 1, 0), axis=1)
+asa_c = _asa_base
 
-def reagg_pm_camp(raw_f):
-    if raw_f.empty: return pd.DataFrame()
-    c = raw_f.groupby('廣告活動').agg(spend=('spend','sum'), imp=('imp','sum'), clk=('clk','sum')).reset_index()
-    c['CTR%'] = c.apply(lambda r: sdiv(r['clk'], r['imp'], 100), axis=1)
-    c['CPC']  = c.apply(lambda r: sdiv(r['spend'], r['clk'], 1, 1), axis=1)
-    return c
+# KW camp
+_kw_base = _reagg(kw_raw_f, ['廣告活動','camp_short'])
+if not _kw_base.empty:
+    _kw_base['CTR%'] = _kw_base.apply(lambda r: sdiv(r['clk'], r['imp'], 100), axis=1)
+    _kw_base['CPC']  = _kw_base.apply(lambda r: sdiv(r['spend'], r['clk'], 1, 1), axis=1)
+    if not kw_camp_all.empty and 'jin' in kw_camp_all.columns:
+        _cols = [c for c in ['廣告活動','camp_short','jin','wan','shidong'] if c in kw_camp_all.columns]
+        _kw_base = _kw_base.merge(kw_camp_all[_cols], on=['廣告活動','camp_short'], how='left')
+    for col in ['jin','wan','shidong']:
+        if col not in _kw_base.columns: _kw_base[col] = 0
+    _kw_base[['jin','wan','shidong']] = _kw_base[['jin','wan','shidong']].fillna(0)
+    _kw_base['CPL'] = _kw_base.apply(lambda r: sdiv(r['spend'], r['jin'], 1, 0), axis=1)
+kw_c = _kw_base
 
-asa_c = reagg_asa(asa_raw_f)
-kw_c  = reagg_kw_camp(kw_raw_f)
-pm_c  = reagg_pm_camp(pm_raw_f)
+# PMax camp
+_pm_base = _reagg(pm_raw_f, ['廣告活動'])
+if not _pm_base.empty:
+    _pm_base['CTR%'] = _pm_base.apply(lambda r: sdiv(r['clk'], r['imp'], 100), axis=1)
+    _pm_base['CPC']  = _pm_base.apply(lambda r: sdiv(r['spend'], r['clk'], 1, 1), axis=1)
+    if not pm_camp_all.empty and 'jin' in pm_camp_all.columns:
+        _cols = [c for c in ['廣告活動','jin','wan','shidong'] if c in pm_camp_all.columns]
+        _pm_base = _pm_base.merge(pm_camp_all[_cols], on='廣告活動', how='left')
+    for col in ['jin','wan','shidong']:
+        if col not in _pm_base.columns: _pm_base[col] = 0
+    _pm_base[['jin','wan','shidong']] = _pm_base[['jin','wan','shidong']].fillna(0)
+    _pm_base['CPL'] = _pm_base.apply(lambda r: sdiv(r['spend'], r['jin'], 1, 0), axis=1)
+pm_c = _pm_base
 
 # 關鍵字層級
-def reagg_asa_kw(raw_f):
+def _asa_kw(raw_f):
     if raw_f.empty: return pd.DataFrame()
-    k = raw_f.groupby(['廣告活動','廣告群組','廣告關鍵字']).agg(spend=('spend','sum'), imp=('imp','sum'), clk=('clk','sum'), dl=('dl','sum')).reset_index()
+    k = raw_f.groupby(['廣告活動','廣告群組','廣告關鍵字']).agg(
+        spend=('spend','sum'), imp=('imp','sum'), clk=('clk','sum'), dl=('dl','sum')).reset_index()
     k['CTR%'] = k.apply(lambda r: sdiv(r['clk'], r['imp'], 100), axis=1)
     k['CPI']  = k.apply(lambda r: sdiv(r['spend'], r['dl'], 1, 0), axis=1)
     return k.sort_values('spend', ascending=False)
 
-def reagg_kw_kw(raw_f):
+def _kw_kw(raw_f):
     if raw_f.empty: return pd.DataFrame()
-    k = raw_f.groupby(['camp_short','廣告關鍵字']).agg(spend=('spend','sum'), imp=('imp','sum'), clk=('clk','sum')).reset_index()
+    k = raw_f.groupby(['camp_short','廣告關鍵字']).agg(
+        spend=('spend','sum'), imp=('imp','sum'), clk=('clk','sum')).reset_index()
     k['CTR%'] = k.apply(lambda r: sdiv(r['clk'], r['imp'], 100), axis=1)
     k['CPC']  = k.apply(lambda r: sdiv(r['spend'], r['clk'], 1, 1), axis=1)
     return k.sort_values('spend', ascending=False)
 
-asa_kw_f = reagg_asa_kw(asa_raw_f)
-kw_kw_f  = reagg_kw_kw(kw_raw_f)
+asa_kw_f = _asa_kw(asa_raw_f)
+kw_kw_f  = _kw_kw(kw_raw_f)
 
 # ── 篩選對比期 ────────────────────────────────────────
 asa_d_c = filter_dates(asa_daily_all, 'date_str', CS, CE) if use_cmp and CS else None
@@ -774,10 +804,15 @@ with t_conv:
     # 漏斗圖
     st.markdown("---")
     st.markdown("#### 轉換漏斗（選取期間，全平台合計）")
+    def _safe_funnel_row(df, has_dl=False):
+        if df.empty: return pd.DataFrame()
+        row = pd.DataFrame({'clk': [sc(df,'clk')], 'mid': [sc(df,'dl') if has_dl else 0],
+                            'jin': [sc(df,'jin')], 'wan': [sc(df,'wan')]})
+        return row
     all_camp = pd.concat([
-        asa_c[['clk','dl','jin','wan']].rename(columns={'dl':'mid'}) if (not asa_c.empty and 'dl' in asa_c.columns) else (asa_c[['clk','jin','wan']].assign(mid=0) if not asa_c.empty else pd.DataFrame()),
-        kw_c[['clk','jin','wan']].assign(mid=0) if not kw_c.empty else pd.DataFrame(),
-        pm_c[['clk','jin','wan']].assign(mid=0) if not pm_c.empty else pd.DataFrame(),
+        _safe_funnel_row(asa_c, has_dl=True),
+        _safe_funnel_row(kw_c,  has_dl=False),
+        _safe_funnel_row(pm_c,  has_dl=False),
     ], ignore_index=True)
 
     if not all_camp.empty:
