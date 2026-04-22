@@ -91,6 +91,10 @@ def sc(df, col, default=0):
     if df.empty or col not in df.columns: return default
     return float(df[col].sum())
 
+def sec(title):
+    st.markdown(f"#### {title}")
+
+
 
 def daily_bar(daily_cur, daily_cmp, col, color, height=260):
     fig = go.Figure()
