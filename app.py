@@ -514,8 +514,7 @@ with t_asa:
         with col1:
             st.markdown("#### 廣告活動明細")
             if not asa_c.empty:
-                cols_show = ['廣告活動','spend','dl','CTR%','CPI']
-                if 'jin' in asa_c.columns: cols_show += ['jin','wan','CPL','進件率%','完開率%']
+                cols_show = [c for c in ['廣告活動','spend','dl','CTR%','CPI','jin','wan','CPL','進件率%','完開率%'] if c in asa_c.columns]
                 disp = asa_c[cols_show].copy()
                 rename = {'spend':'花費台幣','dl':'下載數','jin':'進件數','wan':'完開數'}
                 disp.rename(columns=rename, inplace=True)
