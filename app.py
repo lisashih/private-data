@@ -421,7 +421,7 @@ def cmp_clk(daily_c):
 # Tabs
 # ══════════════════════════════════════════════════════
 t_ov, t_asa, t_kw, t_pm, t_budget, t_conv, t_weekly = st.tabs([
-    "🏠 總覽", "🍎 ASA", "🔍 Google KW", "⚡ Google PMax", "💰 預算進度", "🔄 轉換分析", "📅 週報表"
+    "🏠 總覽", "🍎 ASA", "🔍 Google KW", "⚡ Google PMax", "💰 預算進度", "🔄 轉換分析", "📅 進件數完開數"
 ])
 
 
